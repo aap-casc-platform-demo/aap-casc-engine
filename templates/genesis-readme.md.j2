@@ -10,8 +10,10 @@
 
 This repository contains orchestration metadata only:
 
-- `config.yml` — repository topology, environment branches, and Job Template names
-- `tenants.yml` — tenant registry
+- `config.yml` — repository topology, environment branches, Job Template names,
+  and optional shared references for tenant-bound Dispatchers
+- `tenants.yml` — tenant registry; tenants use the shared Dispatcher by default
+  and may optionally select a central tenant-bound Dispatcher
 - `naming-rules.yml.sample` — inert comprehensive naming-policy example covering cataloged `naming_supported` types (rename, adapt, and uncomment as `naming-rules.yml` to activate; never auto-activates)
 
 Do not place AAP desired-state resource YAML in this repository. Use the
@@ -23,8 +25,8 @@ Place YAML files in the `base/` directory using the appropriate resource type
 subdirectory (e.g., `base/projects/`, `base/templates/`). Environment-specific
 overrides go in `<env>/` directories (e.g., `dev/`, `prd/`).
 
-The CasC dispatcher will automatically pick up and apply these configurations
-to AAP when the CI/CD pipeline triggers.
+The pipeline routes this repository to its configured tenant-bound Dispatcher,
+or to the shared Dispatcher when no dedicated JT is configured.
 
 Use the
 [AAP CasC Resource Catalog]({{ _engine_repo_url }}{{ _engine_blob_path }}main/docs/RESOURCE_CATALOG.md)

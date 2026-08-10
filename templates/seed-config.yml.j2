@@ -16,3 +16,14 @@ job_templates:
 
 env_branch_map:
 {{ _effective_env_branch_map | to_nice_yaml(indent=2) | indent(2, true) }}
+
+# Optional. Required only when a tenant selects dispatcher_job_template.
+# These are shared AAP resource names, not secrets or per-tenant profiles.
+# tenant_dispatcher_defaults:
+#   project: "<customer-engine-project>"
+#   inventory: "<customer-localhost-inventory>"
+#   execution_environment: "<customer-engine-ee>"
+#   credentials:
+#     - "<customer-scm-read-credential>"
+#     - "<customer-controller-credential>"
+#   launcher_user: "<customer-ci-launcher-user>"

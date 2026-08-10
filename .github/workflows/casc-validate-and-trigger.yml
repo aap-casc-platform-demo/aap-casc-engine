@@ -413,7 +413,6 @@ jobs:
       && needs.validate.outputs.tenants_changed == 'true'
     outputs:
       has_tenants_change: ${{ steps.diff.outputs.has_actions }}
-      dispatch_tenant_ids: ${{ steps.diff.outputs.dispatch_tenant_ids }}
       fanout_tenant_ids: ${{ steps.diff.outputs.fanout_tenant_ids }}
     steps:
       - name: Checkout repo
@@ -473,16 +472,12 @@ jobs:
 
           if [ "$(python3 -c 'import json; print(len(json.load(open("tenant_actions.json"))))')" -gt 0 ]; then
             echo "has_actions=true" >> "$GITHUB_OUTPUT"
-            # Brownfield is SCM-only: never include in onboarding fan-out.
-            # Greenfield with dispatch_enabled=false still needs platform fan-out
-            # so Organization/Team foundation can apply.
-            dispatch_tenant_ids=$(python3 -c 'import json; print(json.dumps([a["tenant"]["tenant_id"] for a in json.load(open("tenant_actions.json")) if a["tenant"].get("onboarding_mode", "greenfield") == "greenfield" and a["tenant"].get("dispatch_enabled", True)]))')
-            fanout_tenant_ids=$(python3 -c 'import json; print(json.dumps([a["tenant"]["tenant_id"] for a in json.load(open("tenant_actions.json")) if a["tenant"].get("onboarding_mode", "greenfield") == "greenfield"]))')
-            echo "dispatch_tenant_ids=${dispatch_tenant_ids}" >> "$GITHUB_OUTPUT"
+            # Platform fan-out applies Greenfield foundation and creates optional
+            # tenant-bound Dispatcher JTs for either onboarding mode.
+            fanout_tenant_ids=$(python3 -c 'import json; print(json.dumps([a["tenant"]["tenant_id"] for a in json.load(open("tenant_actions.json")) if a["tenant"].get("onboarding_mode", "greenfield") == "greenfield" or a["tenant"].get("dispatcher_job_template")]))')
             echo "fanout_tenant_ids=${fanout_tenant_ids}" >> "$GITHUB_OUTPUT"
           else
             echo "has_actions=false" >> "$GITHUB_OUTPUT"
-            echo "dispatch_tenant_ids=[]" >> "$GITHUB_OUTPUT"
             echo "fanout_tenant_ids=[]" >> "$GITHUB_OUTPUT"
           fi
 
@@ -570,7 +565,7 @@ jobs:
                   'tenant_scm_org': tenant['tenant_scm_org'],
                   'control_revision': control_revision,
               }
-              for opt in ('team_name', 'repo_mode', 'onboarding_mode', 'dispatch_enabled', 'repo_name', 'repo_visibility'):
+              for opt in ('team_name', 'repo_mode', 'onboarding_mode', 'dispatch_enabled', 'repo_name', 'repo_visibility', 'dispatcher_job_template'):
                   if opt in tenant and tenant[opt] is not None and tenant[opt] != '':
                       extra[opt] = tenant[opt]
               return extra
@@ -638,6 +633,14 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
+      - name: Checkout engine Dispatcher helper
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ needs.validate.outputs.engine_repo }}
+          path: .engine-runtime
+          persist-credentials: false
+          sparse-checkout: scripts/pipeline
+          token: ${{ secrets.ENGINE_REPO_TOKEN || github.token }}
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -674,130 +677,38 @@ jobs:
           print(f'dispatcher_jt_name={dispatcher_jt}')
           " >> $GITHUB_OUTPUT
 
-      - name: Resolve credentials and trigger bounded onboarding dispatch
+      - name: Apply platform scaffold through the shared Dispatcher
         env:
           AAP_ENV_TARGETS_JSON: ${{ secrets.AAP_ENV_TARGETS_JSON }}
           ENVIRONMENTS: ${{ steps.config.outputs.environments }}
-          ONBOARDING_TENANTS: ${{ needs.bootstrap.outputs.dispatch_tenant_ids }}
           DISPATCHER_JT_NAME: ${{ steps.config.outputs.dispatcher_jt_name }}
           POLL_TIMEOUT: ${{ inputs.poll_timeout_minutes }}
           CONTROL_REVISION: ${{ needs.validate.outputs.control_revision }}
+          TRIGGER_COMMIT: ${{ github.sha }}
+          TRIGGER_SOURCE: bootstrap-onboarding
         run: |
-          python3 <<'FANOUT_PY'
-          import os, json, sys, subprocess, time, urllib.parse
+          python3 - <<'PY'
+          import json, os, subprocess, sys
 
-          def normalize_host(raw):
-              raw = raw.rstrip('/')
-              if raw.startswith('http://') or raw.startswith('https://'):
-                  return raw
-              return f'https://{raw}'
-
-          def resolve_env_creds(env_key):
-              """Resolve the required bearer token for one configured environment."""
-              targets = os.environ.get('AAP_ENV_TARGETS_JSON', '')
-              try:
-                  entry = json.loads(targets).get(env_key, {})
-              except json.JSONDecodeError:
-                  raise ValueError('AAP_ENV_TARGETS_JSON must be valid JSON')
-              if entry.get('username') or entry.get('password'):
-                  raise ValueError('username/password credentials are rejected; bearer token only')
-              if entry.get('host') and entry.get('token'):
-                  print(f"::add-mask::{entry['token']}")
-                  return normalize_host(entry['host']), ['-H', f'Authorization: Bearer {entry["token"]}']
-              return None
-
-          def wait_for_terminal(host, auth_args, job_id, timeout_minutes):
-              checks = max(1, timeout_minutes * 6)
-              for _ in range(checks):
-                  time.sleep(10)
-                  result = subprocess.run(['curl', '-sk'] + auth_args + [f'{host}/api/controller/v2/jobs/{job_id}/'], capture_output=True, text=True)
-                  try:
-                      status = json.loads(result.stdout).get('status', 'unknown')
-                  except json.JSONDecodeError:
-                      status = 'unknown'
-                  if status == 'successful':
-                      return
-                  if status in ('failed', 'error', 'canceled'):
-                      raise RuntimeError(f'Dispatcher job {job_id} ended {status}')
-              raise RuntimeError(f'Dispatcher job {job_id} did not complete within {timeout_minutes} minutes')
-
-          environments = json.loads(os.environ.get('ENVIRONMENTS', '[]'))
-          onboarding_tenants = json.loads(os.environ.get('ONBOARDING_TENANTS', '[]'))
-          jt_name = os.environ.get('DISPATCHER_JT_NAME', 'jt-platform-casc_dispatcher')
-          poll_timeout = int(os.environ.get('POLL_TIMEOUT', '30'))
-
-          if not environments:
-              print('No environments in env_branch_map — nothing to dispatch.')
-              sys.exit(0)
-
-          # Resolve all credentials BEFORE launching anything
-          resolved, errors = {}, []
+          environments = json.loads(os.environ.get("ENVIRONMENTS", "[]"))
           for env in environments:
-              try:
-                  result = resolve_env_creds(env)
-              except ValueError as exc:
-                  errors.append(f'ERROR: {exc}')
-                  continue
-              if result is None:
-                  errors.append(f"ERROR: No dispatcher credentials found for env '{env}'.")
-              else:
-                  resolved[env] = result
-
-          if errors:
-              print('\n'.join(errors))
-              sys.exit(1)
-
-          print(f'Credentials resolved for all {len(environments)} environments. Dispatching bounded onboarding scopes sequentially...')
-          for env in environments:
-              host, auth_args = resolved[env]
-              print(f'\n=== Dispatching env={env} on {host} ===')
-
-              # Look up JT
-              jt_cmd = ['curl', '-sk'] + auth_args + [f'{host}/api/controller/v2/job_templates/?name={jt_name}']
-              jt_result = subprocess.run(jt_cmd, capture_output=True, text=True)
-              try:
-                  jt_data = json.loads(jt_result.stdout)
-                  jt_id = jt_data['results'][0]['id']
-              except (json.JSONDecodeError, KeyError, IndexError):
-                  print(f"ERROR: JT '{jt_name}' not found on {host}")
-                  sys.exit(1)
-
-              # Check allow_simultaneous
-              allow_simul = jt_data['results'][0].get('allow_simultaneous', False)
-              if allow_simul:
-                  print(f'ERROR: Dispatcher JT has allow_simultaneous=true — must be false')
-                  sys.exit(1)
-
-              # Onboarding is deliberately bounded: platform first, then only
-              # tenants changed in this control-repo push. No full reconciliation.
-              for scope, tenant_id in [('platform', '')] + [('tenant', oid) for oid in onboarding_tenants]:
-                  if scope == 'full':
-                      raise RuntimeError('Refusing full scope during bounded onboarding')
-                  extra_vars = json.dumps({
-                      'target_env': env,
-                      'dispatch_scope': scope,
-                      'tenant_id': tenant_id,
-                      'control_revision': os.environ.get('CONTROL_REVISION', ''),
-                      'trigger_commit': os.environ.get('GITHUB_SHA', ''),
-                      'trigger_source': 'bootstrap-onboarding',
-                  })
-                  launch_cmd = ['curl', '-sk', '-X', 'POST'] + auth_args + [
-                      '-H', 'Content-Type: application/json',
-                      '-d', json.dumps({'extra_vars': extra_vars}),
-                      f'{host}/api/controller/v2/job_templates/{jt_id}/launch/'
-                  ]
-                  launch_result = subprocess.run(launch_cmd, capture_output=True, text=True)
-                  try:
-                      job_id = json.loads(launch_result.stdout).get('id')
-                  except Exception:
-                      job_id = None
-                  if not job_id:
-                      print(f'ERROR: Failed to launch dispatcher for env={env}, scope={scope}')
-                      sys.exit(1)
-                  print(f'  Dispatcher launched: job_id={job_id} for env={env}, scope={scope}, tenant={tenant_id or "-"}')
-                  wait_for_terminal(host, auth_args, job_id, poll_timeout)
-          print('\n=== Bounded onboarding dispatch complete ===')
-          FANOUT_PY
+              route = {
+                  "dedicated": False,
+                  "dispatch_scope": "platform",
+                  "job_template": os.environ["DISPATCHER_JT_NAME"],
+                  "target_env": env,
+              }
+              with open("dispatcher-route.json", "w", encoding="utf-8") as handle:
+                  json.dump(route, handle)
+              result = subprocess.run([
+                  "python3",
+                  ".engine-runtime/scripts/pipeline/dispatcher_launch.py",
+                  "--route", "dispatcher-route.json",
+                  "--timeout-minutes", os.environ["POLL_TIMEOUT"],
+              ])
+              if result.returncode:
+                  sys.exit(result.returncode)
+          PY
 
   trigger:
     name: Trigger Dispatcher
@@ -820,6 +731,14 @@ jobs:
       - uses: actions/checkout@v5
         with:
           persist-credentials: false
+      - name: Checkout engine Dispatcher helper
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ needs.validate.outputs.engine_repo }}
+          path: .engine-runtime
+          persist-credentials: false
+          sparse-checkout: scripts/pipeline
+          token: ${{ secrets.ENGINE_REPO_TOKEN || github.token }}
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
@@ -855,11 +774,12 @@ jobs:
           else:
               payload = json.loads(gh(f"https://api.github.com/repos/{org}/{repo}/commits/{branch}").decode())
               control_revision = payload["sha"]
-          cfg_bytes = gh(
-              f"https://api.github.com/repos/{org}/{repo}/contents/config.yml?ref={control_revision}",
-              accept="application/vnd.github.v3.raw",
-          )
-          open("config.yml", "wb").write(cfg_bytes)
+          for name in ("config.yml", "tenants.yml"):
+              content = gh(
+                  f"https://api.github.com/repos/{org}/{repo}/contents/{name}?ref={control_revision}",
+                  accept="application/vnd.github.v3.raw",
+              )
+              open(name, "wb").write(content)
           cfg = yaml.safe_load(open("config.yml")) or {}
           env_map = cfg.get("env_branch_map", {})
           branch_name = os.environ.get("GITHUB_REF_NAME", "")
@@ -871,124 +791,27 @@ jobs:
                   out.write("target_env=\n")
               else:
                   out.write(f"target_env={matching[0]}\n")
-              jt = (cfg.get("job_templates") or {}).get("dispatcher") or "${{ inputs.dispatcher_jt_name }}"
-              out.write(f"dispatcher_jt_name={jt}\n")
           print(f"control_revision={control_revision}")
           PY
+          if [ -n "$(grep '^target_env=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-)" ]; then
+            TARGET_ENV=$(grep '^target_env=' "$GITHUB_OUTPUT" | tail -1 | cut -d= -f2-)
+            python3 .engine-runtime/scripts/pipeline/casc_runtime.py resolve-dispatch-route \
+              --config config.yml \
+              --tenants tenants.yml \
+              --caller-role "${{ inputs.caller_role }}" \
+              --target-env "${TARGET_ENV}" \
+              --triggered-repo "${{ github.repository }}" \
+              --output dispatcher-route.json
+          fi
 
       - name: Trigger AAP dispatcher
         if: steps.resolve.outputs.target_env != ''
         env:
           AAP_ENV_TARGETS_JSON: ${{ secrets.AAP_ENV_TARGETS_JSON }}
-          TARGET_ENV: ${{ steps.resolve.outputs.target_env }}
-          JT_NAME: ${{ steps.resolve.outputs.dispatcher_jt_name || inputs.dispatcher_jt_name }}
-          POLL_TIMEOUT: ${{ inputs.poll_timeout_minutes }}
+          TRIGGER_COMMIT: ${{ github.sha }}
+          TRIGGER_SOURCE: ci-cd-pipeline
           CONTROL_REVISION: ${{ steps.resolve.outputs.control_revision }}
-          CALLER_ROLE: ${{ inputs.caller_role }}
         run: |
-          python3 <<'TRIGGER_PY'
-          import os, json, sys, subprocess, time
-
-          def normalize_host(raw):
-              raw = raw.rstrip('/')
-              if raw.startswith('http://') or raw.startswith('https://'):
-                  return raw
-              return f'https://{raw}'
-
-          def resolve_env_creds(env_key):
-              targets = os.environ.get('AAP_ENV_TARGETS_JSON', '')
-              try:
-                  entry = json.loads(targets).get(env_key, {})
-              except json.JSONDecodeError:
-                  raise ValueError('AAP_ENV_TARGETS_JSON must be valid JSON')
-              if entry.get('username') or entry.get('password'):
-                  raise ValueError('username/password credentials are rejected; bearer token only')
-              if entry.get('host') and entry.get('token'):
-                  print(f"::add-mask::{entry['token']}")
-                  return normalize_host(entry['host']), ['-H', f'Authorization: Bearer {entry["token"]}']
-              return None
-
-          target_env = os.environ['TARGET_ENV']
-          jt_name = os.environ.get('JT_NAME', 'jt-platform-casc_dispatcher')
-          poll_timeout = int(os.environ.get('POLL_TIMEOUT', '30'))
-          caller_role = os.environ.get('CALLER_ROLE', 'tenant')
-          control_revision = os.environ.get('CONTROL_REVISION', '')
-
-          try:
-              creds = resolve_env_creds(target_env)
-          except ValueError as exc:
-              print(f'ERROR: {exc}')
-              sys.exit(1)
-          if creds is None:
-              print(f'ERROR: No credentials found for env={target_env}')
-              sys.exit(1)
-          host, auth_args = creds
-
-          print(f'=== Triggering CasC Dispatcher on {host} | Env: {target_env} | JT: {jt_name} ===')
-
-          jt_cmd = ['curl', '-sk'] + auth_args + [f'{host}/api/controller/v2/job_templates/?name={jt_name}']
-          jt_result = subprocess.run(jt_cmd, capture_output=True, text=True)
-          try:
-              jt_data = json.loads(jt_result.stdout)
-              jt_id = jt_data['results'][0]['id']
-          except (json.JSONDecodeError, KeyError, IndexError):
-              print(f"ERROR: JT '{jt_name}' not found on {host}")
-              sys.exit(1)
-
-          allow_simul = jt_data['results'][0].get('allow_simultaneous', False)
-          if allow_simul:
-              print('ERROR: Dispatcher JT has allow_simultaneous=true — must be false')
-              sys.exit(1)
-
-          dispatch_scope = 'platform' if caller_role == 'platform' else 'tenant'
-          if dispatch_scope == 'full':
-              print('ERROR: normal trigger cannot launch full scope')
-              sys.exit(1)
-          extra_vars = {
-              'target_env': target_env,
-              'dispatch_scope': dispatch_scope,
-              'trigger_commit': os.environ.get('GITHUB_SHA', ''),
-              'triggered_repo': os.environ.get('GITHUB_REPOSITORY', ''),
-              'control_revision': control_revision,
-              'trigger_source': 'ci-cd-pipeline',
-          }
-
-          launch_cmd = ['curl', '-sk', '-X', 'POST'] + auth_args + [
-              '-H', 'Content-Type: application/json',
-              '-d', json.dumps({'extra_vars': json.dumps(extra_vars)}),
-              f'{host}/api/controller/v2/job_templates/{jt_id}/launch/'
-          ]
-          launch_result = subprocess.run(launch_cmd, capture_output=True, text=True)
-          try:
-              job_id = json.loads(launch_result.stdout).get('id')
-          except Exception:
-              job_id = None
-
-          if not job_id:
-              print('ERROR: Failed to launch dispatcher')
-              sys.exit(1)
-
-          print(f'Dispatcher launched: ID={job_id}')
-
-          # Serialized baseline requires authoritative completion polling.
-          poll_checks = (poll_timeout * 60) // 10
-          print(f'Polling for completion (timeout: {poll_timeout} min)...')
-          for i in range(1, poll_checks + 1):
-              time.sleep(10)
-              status_cmd = ['curl', '-sk'] + auth_args + [f'{host}/api/controller/v2/jobs/{job_id}/']
-              status_result = subprocess.run(status_cmd, capture_output=True, text=True)
-              try:
-                  status = json.loads(status_result.stdout).get('status', 'unknown')
-              except Exception:
-                  status = 'unknown'
-              print(f'  Status: {status} ({i}/{poll_checks})')
-              if status == 'successful':
-                  print('=== COMPLETED ===')
-                  sys.exit(0)
-              elif status in ('failed', 'error', 'canceled'):
-                  print(f'=== FAILED ({status}) ===')
-                  sys.exit(1)
-
-          print(f'ERROR: Job {job_id} still running after {poll_timeout} min')
-          sys.exit(1)
-          TRIGGER_PY
+          python3 .engine-runtime/scripts/pipeline/dispatcher_launch.py \
+            --route dispatcher-route.json \
+            --timeout-minutes "${{ inputs.poll_timeout_minutes }}"

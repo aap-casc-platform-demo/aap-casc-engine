@@ -108,8 +108,8 @@ single AAP host holds every Job Template for every environment.
 
 | Location | Required resources |
 |---|---|
-| **Management / engine AAP** | Engine Project; Genesis JT; Bootstrap JT; inventory + EE; SCM **write** credential (injects `SCM_TOKEN`); Bootstrap-only execute launcher identity + token (`AAP_ENGINE_TOKEN`) |
-| **Each target AAP** (every host in `AAP_ENV_TARGETS_JSON`) | Engine (or Dispatcher) Project; Dispatcher JT; inventory + EE; SCM **read** credential (`SCM_TOKEN`); target AAP connection credential (`CONTROLLER_HOST` / username / password); Dispatcher-only execute launcher token for that host |
+| **Management / engine AAP** | Engine Project in `Default`; Genesis JT; Bootstrap JT; inventory + EE; SCM **write** credential (injects `SCM_TOKEN`); Bootstrap-only execute launcher identity + token (`AAP_ENGINE_TOKEN`) |
+| **Each target AAP** (every host in `AAP_ENV_TARGETS_JSON`) | Engine (or Dispatcher) Project in `Default`; shared Dispatcher JT plus optional central tenant-bound JTs; inventory + EE; SCM **read** credential (`SCM_TOKEN`); target AAP connection credential (`CONTROLLER_HOST` / username / password); Dispatcher-only execute launcher token for that host |
 | **Drift** | AAP JT only — **not** CI-launched. See placements below |
 
 ```mermaid
@@ -245,13 +245,15 @@ Project (engine), Playbook, EE, Credentials, Variables (YAML), Survey,
 | `jt-platform-genesis` | `genesis.yml` | localhost inventory | collection-bearing EE | SCM **write** credential | n/a | `false` when day-0 values are fixed Variables; optional survey if operators prompt selected day-0 fields | Optional |
 | `jt-platform-bootstrap_tenant` | `bootstrap.yml` | localhost inventory | collection-bearing EE | SCM **write** credential | n/a | **`false`** | **Enabled** — API `extra_vars` allowlist (see below) |
 | `jt-platform-casc_dispatcher` | `site.yml` | localhost inventory | collection-bearing EE | SCM **read** + Controller username/password | **`false` (required)** | **`false`** | **Enabled** — API `extra_vars` allowlist (see below) |
+| Optional tenant-bound Dispatcher | `site.yml` | same localhost inventory | same EE | same SCM read + Controller credentials | **`false` (required)** | **`false`** | **None** — tenant, scope, repo, environment, and control coordinates are fixed |
 | `jt-platform-drift_detection` | `drift-detect.yml` | localhost inventory | collection-bearing EE | SCM **read** + Controller (OAuth preferred; **read** of compared objects) | operator choice | `false` | Optional survey allowlist for `target_env`, `control_revision` |
 
 **AAP launch-variable rule (deployment-blocking):** With
 `ask_variables_on_launch=false`, Automation Controller accepts API `extra_vars`
 only for keys that exist on an **enabled survey**. Keys not in the survey are
 ignored. Preferred baseline: keep `ask_variables_on_launch=false` and use
-surveys as the explicit API-variable allowlist for Bootstrap and Dispatcher.
+surveys as the explicit API-variable allowlist for Bootstrap and the shared
+Dispatcher. Optional tenant-bound Dispatchers are fixed and survey-free.
 Arbitrary API `extra_vars` are **not** accepted unless each key is on the
 enabled survey (when `ask_variables_on_launch=false`). Do **not** put
 trust-boundary control coordinates (`control_scm_org`, `control_repo`,
@@ -309,10 +311,11 @@ runtime, not by marking those fields survey-required.
 | `onboarding_mode` | Yes | `greenfield` or `brownfield` |
 | `tenant_scm_org` | Yes | Tenant SCM org/group; registered Git record is authoritative when present |
 | `aap_organization` | No | Engine: Greenfield defaults to `tenant_id`; Brownfield requires it |
-| `team_name` | No | Engine: Greenfield requires it; Brownfield rejects it |
+| `team_name` | No | Required for all tenants; Greenfield creates it, Brownfield references the existing Team |
 | `repo_mode`, `repo_visibility` | No | Defaults apply when omitted |
 | `repo_name` | No | Optional combined tenant repository override |
 | `dispatch_enabled` | No | Optional override; empty uses registry/default |
+| `dispatcher_job_template` | No | Optional central tenant-bound Dispatcher name; omission uses shared JT |
 | `control_revision` | No | CI pin when supplied; mismatch fails closed |
 
 Do not configure team-lead, user-password, or SCM collaborator survey questions.
@@ -336,7 +339,8 @@ tenant registry (always includes the survey-required identity fields plus
   "team_name": "Stores Automation",
   "repo_mode": "create",
   "onboarding_mode": "greenfield",
-  "repo_name": "stores-aap-casc"
+  "repo_name": "stores-aap-casc",
+  "dispatcher_job_template": "jt-platform-casc_dispatcher-stores"
 }
 ```
 
@@ -370,6 +374,19 @@ platform_scm_org: example-platform
 CI supplies these as lowercase API `extra_vars`. Without this survey allowlist
 (and with `ask_variables_on_launch=false`), they are ignored.
 
+##### Optional tenant-bound Dispatcher — fixed binding, no survey
+
+Bootstrap creates one JT with fixed `target_env`, `dispatch_scope: tenant`,
+`tenant_id`, tenant repository, and control coordinates. It reuses the shared
+Engine Project, localhost Inventory, EE, credentials, and CI launcher configured
+in `tenant_dispatcher_defaults`. AAP infers the JT's `Default` Organization from
+that shared Project. It has no survey and accepts no launch-time
+binding overrides. The pipeline resolves it by exact name and verifies the
+fixed binding before launch; any mismatch fails without shared-JT fallback.
+The generated declarations follow the catalog contracts for
+[`controller_templates`](RESOURCE_CATALOG.md#controller_templates) and
+[`controller_roles`](RESOURCE_CATALOG.md#controller_roles).
+
 ##### Drift — fixed Variables (lowercase) + optional survey allowlist
 
 Same control-coordinate Variables pattern as Dispatcher. Survey (or prompts)
@@ -387,7 +404,8 @@ Never expose these on Bootstrap, Dispatcher, or Drift surveys:
 - Related redirects that retarget the control plane
 
 Bind them only as fixed JT Variables. `control_revision` **is** allowed on the
-Bootstrap and Dispatcher surveys (pin for the bound control repo). One JT set
+Bootstrap and shared Dispatcher surveys (pin for the bound control repo).
+Tenant-bound Dispatchers have no survey or revision launch input. One JT set
 serves one control plane.
 
 #### Launcher identities (mandatory)
@@ -395,7 +413,7 @@ serves one control plane.
 | Identity | Permission | Used as |
 |---|---|---|
 | Bootstrap launcher | Execute **only** on Bootstrap JT | `AAP_ENGINE_TOKEN` (control pipelines) |
-| Dispatcher launcher (per target host) | Execute **only** on Dispatcher JT on that host | Token inside `AAP_ENV_TARGETS_JSON` for that env |
+| Dispatcher launcher (per target host) | Execute on the shared Dispatcher and registered tenant-bound Dispatchers on that host; no unrelated JTs | Token inside `AAP_ENV_TARGETS_JSON` for that env |
 
 Verification checklist:
 
@@ -463,7 +481,7 @@ Keys must match `env_branch_map` environment names used at runtime.
 |---|---|
 | `validate` (push/PR) | `ENGINE_REPO_TOKEN`, `CONTROL_REPO_TOKEN` — **no** deploy secrets |
 | `bootstrap` | `ENGINE_REPO_TOKEN`, `CONTROL_REPO_TOKEN`, `AAP_ENGINE_TOKEN` + variable `AAP_ENGINE_HOST` (via control caller `aap_engine_host` input) |
-| `fanout` | `CONTROL_REPO_TOKEN`, `AAP_ENV_TARGETS_JSON` — bounded onboarding after Greenfield Bootstrap |
+| `fanout` | `CONTROL_REPO_TOKEN`, `AAP_ENV_TARGETS_JSON` — platform-only onboarding when Bootstrap writes platform desired state |
 | `trigger` | `CONTROL_REPO_TOKEN`, `AAP_ENV_TARGETS_JSON` |
 
 Configure secrets as protected/masked where the provider allows. Scope deploy
@@ -473,6 +491,9 @@ deploy jobs must not run without deploy secrets.
 
 Cross-organization reusable workflows do **not** inherit org secrets automatically;
 callers must pass secrets explicitly (seeded callers do this).
+
+Tenant-bound Dispatchers reuse these same AAP credentials and per-host launcher
+tokens. Do not create per-tenant secrets.
 
 Do **not** use public-repository org-secret workarounds as production guidance.
 
@@ -585,6 +606,8 @@ tenants:
     repo_mode: create
     onboarding_mode: greenfield
     status: active
+    # Optional; omit to use the shared Dispatcher.
+    dispatcher_job_template: jt-platform-casc_dispatcher-stores
 ```
 
 For governed `repo_mode=existing`, pre-create `stores-aap-casc` (or the default
@@ -597,19 +620,21 @@ For governed `repo_mode=existing`, pre-create `stores-aap-casc` (or the default
    lowercase API `extra_vars` `tenant_id` + pinned `control_revision`.
 3. Conflicting survey values vs Git fail closed (Git wins for registered tenants).
 4. Greenfield Bootstrap writes Organization + Team foundation on every mapped
-   platform branch and scaffolds every mapped tenant branch. It does **not**
-   create users, RBAC, Galaxy associations, EE associations, or SCM memberships.
-5. After Bootstrap completes, the control pipeline automatically runs the
-   **`fanout` job** (bounded onboarding): platform scope first, then only the
-   new tenant(s) across all environments. Brownfield tenants receive no
-   automatic onboarding fan-out. A platform foundation failure blocks tenant
-   dispatch. If `fanout` fails after Bootstrap already wrote markers, **retry
+   platform branch. Brownfield references an existing Organization + Team and
+   does not modify them. Both modes scaffold every mapped tenant branch.
+5. If `dispatcher_job_template` is set, Bootstrap also writes the central JT
+   and Execute roles as platform desired state. It reuses shared Project,
+   Inventory, EE, credentials, and launcher settings from `config.yml`.
+6. The control pipeline runs the **`fanout` job** only to apply platform scope
+   across mapped environments. It never applies tenant desired state during
+   onboarding. A platform failure blocks onboarding completion. If `fanout`
+   fails after Bootstrap already wrote markers, **retry
    only the failed `fanout` job** (GitHub “Re-run failed jobs” / GitLab retry
    on `fanout:dispatcher`). Do **not** rerun the full control pipeline for
    recovery: `corrected` and `activated` tenants produce no Bootstrap action
    once a marker exists, so a full rerun will not recreate fan-out inputs.
-6. If `dispatch_enabled=false`, scaffolding and foundation still run; tenant
-   apply waits until re-enabled.
+7. Hand over the tenant repo only after Bootstrap and required platform fan-out
+   succeed. The first tenant apply is a later deliberate tenant-repo commit.
 
 ### A6. First dispatch
 
@@ -619,7 +644,8 @@ After Bootstrap (or for day-2 desired state):
    tenant repo.
 2. Pipeline `trigger` launches Dispatcher on the mapped env host via
    `AAP_ENV_TARGETS_JSON`.
-3. Confirm Dispatcher `allow_simultaneous=false` and job succeeds.
+3. The pipeline uses the optional tenant-bound JT when configured; otherwise it
+   uses the shared JT. Confirm `allow_simultaneous=false` and job success.
 4. Promote low → high through mapped branches.
 
 Manual local example (lowercase `-e` vars; env must still provide
@@ -686,10 +712,14 @@ env vars.
 | `create_missing_env_branches` | `control` | Boolean |
 | `job_templates.*` | `control` | Customer JT names |
 | `env_branch_map` | `control` | Must align with `AAP_ENV_TARGETS_JSON` keys used in CI |
+| `tenant_dispatcher_defaults` | `control` | Optional shared Project, Inventory, EE, credentials, and launcher user names used only by tenant-bound JTs; contains no secrets |
 
 Dispatcher concurrency (`allow_simultaneous=false` on the Dispatcher JT) is
 required for the production serialized baseline. This is not a `config.yml`
 field.
+
+When `tenant_dispatcher_defaults` is used, the named shared resources must exist
+under the same names on every mapped target AAP host.
 
 Example:
 
@@ -711,6 +741,15 @@ env_branch_map:
   dev: develop
   tst: release/tst
   prd: main
+# Optional; required only when a tenant selects dispatcher_job_template.
+tenant_dispatcher_defaults:
+  project: prj-platform-casc_engine
+  inventory: inv-platform-localhost
+  execution_environment: ee-platform-casc
+  credentials:
+    - crd-platform-scm_read
+    - crd-platform-controller
+  launcher_user: svc_casc_dispatcher
 ```
 
 ### B3. Tenant record (`tenants.yml`)
@@ -719,7 +758,7 @@ env_branch_map:
 |---|---|---|---|---|
 | `tenant_id` | `tenant` | required | required | Stable engine key |
 | `aap_organization` | `tenant` | optional | required | Exact AAP Organization name |
-| `team_name` | `tenant` | required | forbidden | Greenfield Team only |
+| `team_name` | `tenant` | required | required | Greenfield creates it; Brownfield references the existing Team |
 | `tenant_scm_org` | `tenant` | required | required | Tenant SCM org/group |
 | `repo_name` | `tenant` | optional | optional | Combined repo override |
 | `repo_mode` | `tenant` | optional | optional | Persisted for Bootstrap |
@@ -727,9 +766,12 @@ env_branch_map:
 | `onboarding_mode` | `tenant` | required | required | `greenfield` \| `brownfield` |
 | `status` | `tenant` | optional | optional | `active` \| `inactive` |
 | `dispatch_enabled` | `tenant` | optional | optional | Default `true` |
+| `dispatcher_job_template` | `tenant` | optional | optional | Customer-owned central JT name; omit for shared Dispatcher |
 
 Do not store derived `repository` / `repositories` / `repo_by_folder` as
 customer inputs. Legacy `repo_pattern` / `repo_names` are rejected.
+Dedicated JT names are customer-owned; the optional naming policy validates
+them when a `controller_templates` rule is active.
 
 ### B4. Bootstrap launch inputs
 
@@ -738,7 +780,7 @@ customer inputs. Legacy `repo_pattern` / `repo_names` are rejected.
 | — | `SCM_TOKEN` | `cred` | Required (write credential) |
 | `scm_base_url`, control coordinates, `engine_repo` | matching UPPER | `fixed` | Trust boundary — not surveyed |
 | `control_revision` | `CONTROL_REVISION` | `survey` + `pipeline` | Must be on Bootstrap survey allowlist; CI pin; mismatch fails closed |
-| `tenant_id`, `onboarding_mode`, `aap_organization`, `team_name`, `tenant_scm_org`, `repo_mode`, `repo_visibility`, `repo_name`, `dispatch_enabled` | matching UPPER where playbook looks up env | `survey` / `pipeline` | All must appear on the Bootstrap survey so API `extra_vars` are accepted |
+| `tenant_id`, `onboarding_mode`, `aap_organization`, `team_name`, `tenant_scm_org`, `repo_mode`, `repo_visibility`, `repo_name`, `dispatch_enabled`, `dispatcher_job_template` | matching UPPER where playbook looks up env | `survey` / `pipeline` | All supplied keys must appear on the Bootstrap survey so API `extra_vars` are accepted |
 
 ### B5. Branch and pipeline model
 
@@ -747,7 +789,7 @@ customer inputs. Legacy `repo_pattern` / `repo_names` are rejected.
 | Push to mapped desired-state branch | Validate + dispatch caller scope to mapped env |
 | Push to feature branch | Validate only |
 | Pull/merge request | Validate only; no deploy credentials |
-| Control push changing `tenants.yml` | Validate, lifecycle diff, Bootstrap, automatic bounded onboarding for Greenfield only |
+| Control push changing `tenants.yml` | Validate, lifecycle diff, Bootstrap, then platform-only onboarding when platform desired state was written |
 | `[skip dispatch]` commit | Validation only |
 
 See [Pipeline Trigger Logic](pipeline-trigger-logic.md).
@@ -768,6 +810,11 @@ See [Pipeline Trigger Logic](pipeline-trigger-logic.md).
 
 With `ask_variables_on_launch=false`, every CI-supplied key above must exist on
 the Dispatcher survey. Normal platform/tenant pipelines never request `full`.
+
+For a tenant-bound JT these values are fixed by Bootstrap and there is no
+survey. The pipeline sends no binding `extra_vars`; it verifies the JT and then
+launches/polls it. Shared `dispatch_scope=full` fails closed whenever any tenant
+has `dispatcher_job_template` configured.
 
 ### B7. Drift inputs (`drift-detect.yml`)
 
@@ -790,8 +837,11 @@ ignored. Apply via Dispatcher — Drift does not remediate.
 
 ### C1. Brownfield gradual adoption
 
-1. Register exact existing `aap_organization` with no `team_name`.
-2. Bootstrap SCM only (no AAP foundation, no onboarding fan-out).
+1. Register exact existing `aap_organization` and `team_name` references.
+2. Bootstrap leaves that Organization and Team unchanged. With the shared JT it
+   is SCM-only; with `dispatcher_job_template` it additionally scaffolds the
+   central JT and Execute roles through platform desired state. The normal
+   platform apply resolves those references; failure leaves onboarding incomplete.
 3. Baseline one object into YAML on a feature branch; open PR/MR.
 4. Merge to the lowest mapped branch; promote upward.
 5. Repeat object by object.
@@ -816,13 +866,20 @@ never validates filenames.
 
 First matching `.aap-casc-engine/tenant-scaffold.yml` is the lifecycle boundary.
 
-**Marker SCAFFOLD_VERSION 4** (current) includes:
-- `tenant_id`, `aap_organization`, `team_name` (Greenfield only)
+**Marker SCAFFOLD_VERSION 5** (current) includes:
+- `tenant_id`, `aap_organization`, `team_name`
 - `tenant_scm_org`, `repository` (resolved combined repo name)
 - `onboarding_mode`, `repo_mode`, `repo_visibility`
+- optional `dispatcher_job_template`
 - GitLab: resolved group/namespace details via path-based lookup (no numeric IDs stored)
 
-Removed from marker v4:
+Version 5 is the pre-release cutover that adds the required Team reference and
+optional tenant Dispatcher binding. There are no customer deployments to
+migrate. Regenerate disposable version-4 demo/nonproduction scaffolds before
+validation; the engine intentionally does not carry a legacy marker migration
+path into the first supported release.
+
+Removed from marker v4 and still absent from v5:
 - Numeric `*_namespace_id` fields (GitLab groups now resolved on-demand via
   tasks/gitlab_resolve_group.yml using exact GET `/groups/<URL-encoded-full-path>`)
 
@@ -831,7 +888,7 @@ Removed from marker v4:
 | `tenant_id` | May correct or remove | Immutable |
 | Effective `aap_organization` | May correct | Immutable |
 | SCM namespace, `repo_mode`, `repo_name` / resolved `repository`, onboarding mode, visibility | May correct | Immutable |
-| Greenfield `team_name` | May correct | Immutable Bootstrap input |
+| `team_name`, optional `dispatcher_job_template` | May correct | Immutable Bootstrap inputs |
 | `status`, `dispatch_enabled` | Mutable | Mutable |
 
 Exact marker-owned identity may be **restored** (no force-push). Changes **away**
@@ -857,10 +914,12 @@ Recommendations:
 
 ### C5. Users, RBAC, credentials, and execution environments
 
-Generic Bootstrap creates no users and assigns no roles. Declare users, IdP
-mappings, RBAC, Galaxy credentials, and EE associations in desired-state YAML.
-Shipped user examples contain no password; apply paths disable the collection
-`change_me` fallback.
+Generic Bootstrap creates no users and no customer resource roles. Declare
+users, IdP mappings, customer RBAC, Galaxy credentials, and EE associations in
+desired-state YAML. The only engine-owned role exception is Execute on an
+optional tenant-bound Dispatcher for the shared CI launcher and referenced
+tenant Team. Shipped user examples contain no password; apply paths disable the
+collection `change_me` fallback.
 
 ### C6. Deletion and drift limits
 
@@ -900,16 +959,15 @@ the marker. Rejected: any change away from those values after the marker exists.
   desired-state apply waits until re-enabled, then use mapped-branch merge or
   protected manual dispatch.
 
-#### Greenfield onboarding
+#### Tenant onboarding
 
-After Bootstrap completes for a Greenfield tenant, the control pipeline
-automatically runs the **`fanout` job** (bounded onboarding): platform scope
-first, then only the new tenant(s) across all environments. If
-`dispatch_enabled=false`, scaffolding and foundation still run; tenant apply
-waits until re-enabled. If `fanout` fails after markers exist, retry only the
-failed `fanout` job — do not rely on a full control pipeline rerun. To resume
-after re-enabling dispatch, merge a change to the tenant repository or manually
-trigger the tenant's Dispatcher jobs.
+After Bootstrap writes platform desired state, the control pipeline runs the
+**`fanout` job** for platform scope only across mapped environments. This
+applies Greenfield Org+Team and, when configured, the central tenant Dispatcher
+and Execute roles. It never applies tenant desired state. If `fanout` fails
+after markers exist, retry only the failed `fanout` job. Hand over the tenant
+repo only after onboarding succeeds; the first tenant apply is a later tenant
+commit.
 
 #### Control revision mismatch
 
@@ -990,7 +1048,7 @@ evidence **outside** this engine repository.
 | Symptom | Likely cause | Action |
 |---|---|---|
 | Tenant ID rejected | Unsafe key | Use `^[a-z][a-z0-9_]*$`, max 64 |
-| Brownfield rejected | Org/team rules | Require `aap_organization`; omit `team_name` |
+| Brownfield rejected | Org/team rules | Require exact existing `aap_organization` and `team_name` references |
 | Marker conflict / immutable lifecycle | Post-scaffold identity change | Restore marker-owned values; no force-push |
 | Naming failure | Active `naming-rules.yml` | Align exact Organization/Team (and other listed) identity strings |
 | Missing branch | Branch map gap | Create branches or enable creation |
@@ -998,6 +1056,7 @@ evidence **outside** this engine repository.
 | CI `extra_vars` ignored | Key missing from survey with `ask_variables_on_launch=false` | Add the lowercase key to the JT survey allowlist |
 | JT Variables ignored | Uppercase names in JT/survey | Use lowercase Ansible vars (`control_repo`, not `CONTROL_REPO`) |
 | JT not found on target host | Dispatcher missing on that AAP | Install Project+JT+creds+inventory+EE on every `AAP_ENV_TARGETS_JSON` host |
+| Tenant-bound JT rejected | Missing/mismatched fixed binding or survey enabled | Restore Bootstrap-managed fixed values; do not fall back to the shared JT |
 | Dispatch timeout | Job pending/failed or poll window | Check AAP job, RBAC, token, `poll_timeout_minutes` / `POLL_TIMEOUT_MINUTES` |
 | Bootstrap timeout | Poll window | GitHub reusable workflow currently fixed at 15 minutes; GitLab can raise `BOOTSTRAP_POLL_TIMEOUT_MINUTES` |
 | `allow_simultaneous` failure | Dispatcher concurrency | Set Dispatcher `allow_simultaneous=false` |
@@ -1011,7 +1070,6 @@ evidence **outside** this engine repository.
 
 - GitLab live validation parity
 - ROADMAP-008 formal support / upgrade matrix
-- Scoped Dispatcher concurrency beyond serialized baseline
 - Expanding Drift beyond the five locked `identity_presence` adapters
 - Establishing any new unvalidated Drift multi-AAP baseline beyond the playbook
   env contract

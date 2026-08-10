@@ -67,6 +67,7 @@ def brownfield(tenant_id="legacy", **overrides):
     record = {
         "tenant_id": tenant_id,
         "aap_organization": "Legacy LDAP Organization",
+        "team_name": "Legacy Automation Team",
         "tenant_scm_org": "ww-tenants",
         "onboarding_mode": "brownfield",
     }
@@ -96,16 +97,16 @@ class TenantIdentityTests(unittest.TestCase):
         self.assertEqual(runtime["aap_organization"], 'WW Stores: Automation #1 "Primary"')
         self.assertEqual(runtime["team_name"], "Storekeepers' Automation")
 
-    def test_brownfield_contract_is_scm_only_identity(self):
+    def test_brownfield_contract_references_existing_org_and_team(self):
         runtime = casc_runtime.public_tenant_runtime(brownfield())
         self.assertEqual(runtime["aap_organization"], "Legacy LDAP Organization")
-        self.assertNotIn("team_name", runtime)
+        self.assertEqual(runtime["team_name"], "Legacy Automation Team")
         with self.assertRaisesRegex(ValueError, "requires explicit aap_organization"):
             casc_runtime.normalize_tenant_record(
                 brownfield(aap_organization=None)
             )
-        with self.assertRaisesRegex(ValueError, "does not accept team_name"):
-            casc_runtime.normalize_tenant_record(brownfield(team_name="Legacy Team"))
+        with self.assertRaisesRegex(ValueError, "team_name must be"):
+            casc_runtime.normalize_tenant_record(brownfield(team_name=""))
 
     def test_tenant_id_safe_key_limits(self):
         for valid in ("a", "stores", "tenant_01", "a" * 64):
@@ -221,7 +222,7 @@ class TenantIdentityTests(unittest.TestCase):
             if "gitlab" in str(pipeline):
                 self.assertIn("CI_PROJECT_PATH", content)
             else:
-                self.assertIn("GITHUB_REPOSITORY", content)
+                self.assertIn("github.repository", content)
 
 class LifecycleTests(unittest.TestCase):
     def test_added_active_tenant_is_actionable(self):
@@ -317,7 +318,7 @@ class LifecycleTests(unittest.TestCase):
         expected = casc_runtime.build_scaffold_marker(
             tenant, repository="casc-tenant-stores"
         )
-        self.assertEqual(expected["scaffold_version"], 4)
+        self.assertEqual(expected["scaffold_version"], 5)
         self.assertIn("repo_mode", expected)
         self.assertIn("repo_visibility", expected)
         self.assertNotIn("tenant_scm_namespace_id", expected)
@@ -335,7 +336,7 @@ class LifecycleTests(unittest.TestCase):
         marker = casc_runtime.build_scaffold_marker(
             brown, repository="casc-tenant-legacy"
         )
-        self.assertNotIn("team_name", marker)
+        self.assertEqual(marker["team_name"], "Legacy Automation Team")
 
     def test_survey_resolution_uses_git_as_authority(self):
         doc = {"tenants": [greenfield(aap_organization="WW Stores")]}
@@ -411,26 +412,17 @@ class FoundationAndTemplateTests(unittest.TestCase):
             'path: "base/organizations/{{ _effective_tenant_id }}.yml"',
             'path: "base/teams/{{ _effective_tenant_id }}.yml"',
         )
-        for path in (
-            ROOT / "tasks/bootstrap_scm_github.yml",
-            ROOT / "tasks/bootstrap_scm_gitlab.yml",
-            ROOT / "bootstrap.yml",
-        ):
-            content = path.read_text(encoding="utf-8")
-            for fragment in path_fragments:
-                self.assertIn(fragment, content, path)
-            self.assertNotIn("iter_foundation_targets", content, path)
+        bootstrap = (ROOT / "bootstrap.yml").read_text(encoding="utf-8")
+        for fragment in path_fragments:
+            self.assertIn(fragment, bootstrap)
+        self.assertNotIn("iter_foundation_targets", bootstrap)
         for provider in (
             ROOT / "tasks/bootstrap_scm_github.yml",
             ROOT / "tasks/bootstrap_scm_gitlab.yml",
         ):
             content = provider.read_text(encoding="utf-8")
-            self.assertIn('repo: "{{ platform_repo }}"', content, provider)
-            self.assertEqual(
-                content.count('repo: "{{ platform_repo }}"'),
-                2,
-                provider,
-            )
+            self.assertIn("_platform_scaffold_files", content, provider)
+            self.assertIn("product(_mapped_branches)", content, provider)
         runtime = (ROOT / "scripts/pipeline/casc_runtime.py").read_text(encoding="utf-8")
         self.assertNotIn("def iter_foundation_targets", runtime)
         self.assertNotIn("FOUNDATION_RESOURCES", runtime)
@@ -490,11 +482,10 @@ class FoundationAndTemplateTests(unittest.TestCase):
         self.assertIn("team-template.yml.j2", bootstrap)
         for task in PROVIDER_TASKS:
             content = task.read_text()
-            self.assertIn("Build Greenfield foundation targets", content)
+            self.assertIn("_platform_scaffold_files", content)
             self.assertNotIn("rbac-user", content)
             self.assertNotIn("rbac-team", content)
-            self.assertIn("label: team", content)
-            self.assertIn("Verify final Greenfield foundation content", content)
+            self.assertIn("Verify final platform Bootstrap scaffold content", content)
 
     def test_user_sample_is_password_free_and_uses_organizations_list(self):
         sample = yaml.safe_load((ROOT / "templates/seed-aap-users.yml.j2").read_text())
@@ -1868,7 +1859,7 @@ class ProviderAndPipelineParityTests(unittest.TestCase):
             self.assertIn("Verify final scaffold marker", content, task)
             self.assertIn("Verify final thin caller", content, task)
             self.assertIn("Verify required scaffold files", content, task)
-            self.assertIn("Verify final Greenfield foundation", content, task)
+            self.assertIn("Verify final platform Bootstrap scaffold", content, task)
             self.assertIn("default-branch scaffold marker", content, task)
             self.assertIn("Validate latest survey registry candidate", content, task)
             self.assertNotIn("default('aap-organizations-global')", content, task)
@@ -1907,7 +1898,7 @@ class ProviderAndPipelineParityTests(unittest.TestCase):
         self.assertNotIn("remediate.yml", content)
         self.assertNotIn("extra_in_live", content)
 
-    def test_brownfield_excluded_from_onboarding_fanout_outputs(self):
+    def test_onboarding_fanout_is_platform_only_when_scaffold_is_needed(self):
         workflows = (
             ROOT / ".github/workflows/casc-validate-and-trigger.yml",
             ROOT / "pipeline-templates/github/casc-validate-and-trigger.yml",
@@ -1915,27 +1906,26 @@ class ProviderAndPipelineParityTests(unittest.TestCase):
         for workflow_path in workflows:
             workflow = workflow_path.read_text()
             self.assertIn('onboarding_mode", "greenfield") == "greenfield"', workflow, workflow_path)
+            self.assertIn('or a["tenant"].get("dispatcher_job_template")', workflow, workflow_path)
             self.assertIn("fanout_tenant_ids", workflow, workflow_path)
             self.assertIn("fanout_tenant_ids != '[]'", workflow, workflow_path)
+            self.assertNotIn("dispatch_tenant_ids", workflow, workflow_path)
+            self.assertNotIn("ONBOARDING_TENANTS", workflow, workflow_path)
 
         gitlab = (ROOT / "pipeline-templates/gitlab/.gitlab-ci-template.yml").read_text()
         self.assertIn('onboarding_mode", "greenfield") == "greenfield"', gitlab)
+        self.assertIn('or a["tenant"].get("dispatcher_job_template")', gitlab)
         self.assertIn("BOOTSTRAP_FANOUT_TENANT_IDS", gitlab)
-        self.assertIn("No greenfield onboarding tenants", gitlab)
+        self.assertIn("No platform scaffold requires fan-out", gitlab)
+        self.assertNotIn("BOOTSTRAP_DISPATCH_TENANT_IDS", gitlab)
 
-    def test_pipelines_reject_username_password_creds_twice(self):
-        """Token-only parity: each GitHub workflow and GitLab template reject basic auth twice."""
-        rejection = "username/password credentials are rejected; bearer token only"
-        for workflow_path in (
-            ROOT / ".github/workflows/casc-validate-and-trigger.yml",
-            ROOT / "pipeline-templates/github/casc-validate-and-trigger.yml",
-        ):
-            count = workflow_path.read_text().count(rejection)
-            self.assertEqual(count, 2, f"{workflow_path} expected 2 rejection checks, found {count}")
-
-        gitlab = ROOT / "pipeline-templates/gitlab/.gitlab-ci-template.yml"
-        count = gitlab.read_text().count(rejection)
-        self.assertEqual(count, 2, f"{gitlab} expected 2 rejection checks, found {count}")
+    def test_pipelines_share_the_token_only_dispatcher_launcher(self):
+        """Every pipeline delegates token-only AAP launch to one helper."""
+        rejection = "username/password targets are rejected; bearer token only"
+        launcher = (ROOT / "scripts/pipeline/dispatcher_launch.py").read_text()
+        self.assertEqual(launcher.count(rejection), 1)
+        for pipeline in PIPELINES:
+            self.assertIn("dispatcher_launch.py", pipeline.read_text(), pipeline)
 
     def test_genesis_converges_platform_scaffold_all_branches(self):
         for task in (
@@ -2118,185 +2108,18 @@ class ProviderAndPipelineParityTests(unittest.TestCase):
             self.assertIn("git cat-file -e", content, pipeline)
             self.assertIn("refusing an unsafe tenant lifecycle diff", content, pipeline)
 
-    def _extract_fanout_py(self, content: str) -> str:
-        import re
-        import textwrap
-
-        match = re.search(
-            r"python3\s+<<'FANOUT_PY'\n(.*?)^\s*FANOUT_PY\s*$",
-            content,
-            flags=re.M | re.S,
-        )
-        self.assertIsNotNone(match, "FANOUT_PY heredoc missing")
-        return textwrap.dedent(match.group(1))
-
-    def _exec_fanout_py(
-        self,
-        source: str,
-        *,
-        env: dict[str, str],
-        job_statuses: list[str],
-        control_config: str | None = None,
-    ) -> list[dict]:
-        """Execute a production FANOUT_PY block with mocked curl launches."""
-        import subprocess
-        import tempfile
-        from pathlib import Path
-        from types import SimpleNamespace
-
-        launches: list[dict] = []
-        status_iter = iter(job_statuses)
-        next_job_id = 100
-
-        def fake_run(cmd, capture_output=False, text=False, check=False, **_kwargs):
-            cmd = list(cmd)
-            joined = " ".join(cmd)
-            if "/job_templates/?name=" in joined:
-                body = json.dumps(
-                    {
-                        "results": [
-                            {"id": 9, "allow_simultaneous": False, "name": "dispatcher"}
-                        ]
-                    }
-                )
-                return SimpleNamespace(stdout=body, stderr="", returncode=0)
-            if "/launch/" in joined:
-                payload = {}
-                if "-d" in cmd:
-                    payload = json.loads(cmd[cmd.index("-d") + 1])
-                extra = json.loads(payload.get("extra_vars", "{}"))
-                launches.append(extra)
-                nonlocal next_job_id
-                next_job_id += 1
-                body = json.dumps({"id": next_job_id})
-                return SimpleNamespace(stdout=body, stderr="", returncode=0)
-            if "/jobs/" in joined:
-                try:
-                    status = next(status_iter)
-                except StopIteration:
-                    status = "successful"
-                body = json.dumps({"status": status})
-                return SimpleNamespace(stdout=body, stderr="", returncode=0)
-            if cmd[:1] == ["sleep"] or (len(cmd) >= 1 and cmd[0].endswith("sleep")):
-                return SimpleNamespace(stdout="", stderr="", returncode=0)
-            return SimpleNamespace(stdout="{}", stderr="", returncode=0)
-
-        with tempfile.TemporaryDirectory() as tmp:
-            if control_config is not None:
-                control = Path(tmp) / ".control"
-                control.mkdir()
-                (control / "config.yml").write_text(control_config, encoding="utf-8")
-            with mock.patch.object(subprocess, "run", side_effect=fake_run), mock.patch.object(
-                sys, "exit", side_effect=SystemExit
-            ), mock.patch("time.sleep", return_value=None):
-                old_cwd = os.getcwd()
-                old_env = os.environ.copy()
-                try:
-                    os.chdir(tmp)
-                    os.environ.clear()
-                    os.environ.update(env)
-                    compiled = compile(source, "<FANOUT_PY>", "exec")
-                    exec(compiled, {"__name__": "__main__"})
-                finally:
-                    os.chdir(old_cwd)
-                    os.environ.clear()
-                    os.environ.update(old_env)
-        return launches
-
-    def _fanout_env(self, kind: str, *, tenant_dispatch: bool) -> dict[str, str]:
-        """Build env for a production FANOUT_PY block (github | standalone | gitlab)."""
-        base = {
-            "AAP_ENV_TARGETS_JSON": json.dumps(
-                {"dev": {"host": "https://aap", "token": "t"}}
-            ),
-            "DISPATCHER_JT_NAME": "dispatcher",
-            "CONTROL_REVISION": "a" * 40,
-        }
-        tenants = ["stores"] if tenant_dispatch else []
-        if kind == "gitlab":
-            return {
-                **base,
-                "BOOTSTRAP_FANOUT_TENANT_IDS": json.dumps(["stores"]),
-                "BOOTSTRAP_DISPATCH_TENANT_IDS": json.dumps(tenants),
-                "POLL_TIMEOUT_MINUTES": "1",
-                "CI_COMMIT_SHA": "b" * 40,
-            }
-        return {
-            **base,
-            "ENVIRONMENTS": json.dumps(["dev"]),
-            "ONBOARDING_TENANTS": json.dumps(tenants),
-            "POLL_TIMEOUT": "1",
-            "GITHUB_SHA": "b" * 40,
-        }
-
     def test_fanout_acceptance_matrix_contracts(self):
-        """ROADMAP-010: exercise all three production FANOUT_PY blocks."""
+        """Onboarding fan-out applies platform state only on every provider."""
         for pipeline in PIPELINES:
             content = pipeline.read_text()
             self.assertNotIn("onboarding_dispatch", content, pipeline)
             self.assertNotIn("bootstrap_dispatch_fanout", content, pipeline)
             self.assertNotIn("run_bounded_onboarding", content, pipeline)
-            self.assertIn("FANOUT_PY", content, pipeline)
-            self.assertIn(
-                "[('platform', '')] + [('tenant', oid) for oid in onboarding_tenants]",
-                content,
-                pipeline,
-            )
-            self.assertIn("Refusing full scope during bounded onboarding", content, pipeline)
+            self.assertIn("dispatcher_launch.py", content, pipeline)
+            self.assertIn("'dispatch_scope': 'platform'" if "gitlab" in str(pipeline) else '"dispatch_scope": "platform"', content, pipeline)
+            self.assertNotIn("ONBOARDING_TENANTS", content, pipeline)
+            self.assertNotIn("BOOTSTRAP_DISPATCH_TENANT_IDS", content, pipeline)
             self.assertIn('onboarding_mode", "greenfield") == "greenfield"', content, pipeline)
-
-        runtime_src = (ROOT / "scripts/pipeline/casc_runtime.py").read_text()
-        self.assertNotIn("def run_bounded_onboarding", runtime_src)
-        self.assertNotIn("def launch_dispatcher", runtime_src)
-
-        blocks = {
-            "github": self._extract_fanout_py(
-                (ROOT / ".github/workflows/casc-validate-and-trigger.yml").read_text()
-            ),
-            "standalone": self._extract_fanout_py(
-                (ROOT / "pipeline-templates/github/casc-validate-and-trigger.yml").read_text()
-            ),
-            "gitlab": self._extract_fanout_py(
-                (ROOT / "pipeline-templates/gitlab/.gitlab-ci-template.yml").read_text()
-            ),
-        }
-        # Standalone GitHub must not silently share the reusable block source.
-        self.assertNotEqual(blocks["github"], blocks["standalone"])
-
-        control_config = "env_branch_map:\n  dev: develop\n"
-        for kind, source in blocks.items():
-            with self.subTest(kind=kind, case="platform_then_tenant"):
-                launches = self._exec_fanout_py(
-                    source,
-                    env=self._fanout_env(kind, tenant_dispatch=True),
-                    job_statuses=["successful", "successful"],
-                    control_config=control_config if kind == "gitlab" else None,
-                )
-                self.assertEqual(
-                    [item["dispatch_scope"] for item in launches],
-                    ["platform", "tenant"],
-                )
-                self.assertEqual(launches[1]["tenant_id"], "stores")
-
-            with self.subTest(kind=kind, case="platform_failure_blocks_tenant"):
-                with self.assertRaises(RuntimeError):
-                    self._exec_fanout_py(
-                        source,
-                        env=self._fanout_env(kind, tenant_dispatch=True),
-                        job_statuses=["failed"],
-                        control_config=control_config if kind == "gitlab" else None,
-                    )
-
-            with self.subTest(kind=kind, case="paused_tenant_platform_only"):
-                launches = self._exec_fanout_py(
-                    source,
-                    env=self._fanout_env(kind, tenant_dispatch=False),
-                    job_statuses=["successful"],
-                    control_config=control_config if kind == "gitlab" else None,
-                )
-                self.assertEqual(
-                    [item["dispatch_scope"] for item in launches], ["platform"]
-                )
 
         # Recovery contract: docs require fanout-only retry, not full rerun.
         guide = (ROOT / "docs/ENGINE_SETUP_AND_OPERATIONS_GUIDE.md").read_text()
@@ -2433,7 +2256,7 @@ class ProviderAndPipelineParityTests(unittest.TestCase):
                 yaml.safe_load(rendered)
                 self.assertIn(f"CASC_CALLER_ROLE: '{role}'", rendered)
 
-    def test_dispatch_pause_skips_only_tenant_onboarding_scope(self):
+    def test_dispatch_pause_does_not_change_platform_only_onboarding(self):
         for pipeline in PIPELINES:
             content = pipeline.read_text()
             self.assertIn("dispatch_enabled", content, pipeline)
@@ -2441,12 +2264,14 @@ class ProviderAndPipelineParityTests(unittest.TestCase):
             self.assertNotRegex(content, r"(?m)^\s*tenant_ids:")
             self.assertNotIn('echo "tenant_ids=', content, pipeline)
             self.assertNotIn("BOOTSTRAP_TENANT_IDS", content, pipeline)
-            if "gitlab" in str(pipeline):
-                self.assertIn("BOOTSTRAP_DISPATCH_TENANT_IDS", content)
-                self.assertIn("BOOTSTRAP_FANOUT_TENANT_IDS", content)
-            else:
-                self.assertIn("dispatch_tenant_ids", content)
-                self.assertIn("fanout_tenant_ids", content)
+            self.assertNotIn("BOOTSTRAP_DISPATCH_TENANT_IDS", content)
+            self.assertNotIn("dispatch_tenant_ids", content)
+            self.assertIn(
+                "BOOTSTRAP_FANOUT_TENANT_IDS"
+                if "gitlab" in str(pipeline)
+                else "fanout_tenant_ids",
+                content,
+            )
 
     def test_cross_namespace_clone_paths_are_collision_safe(self):
         role = (ROOT / "roles/git_clone_repos/tasks/main.yml").read_text()

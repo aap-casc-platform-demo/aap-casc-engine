@@ -1,0 +1,11 @@
+---
+controller_roles:
+  - user: {{ _tenant_dispatcher_defaults.launcher_user | to_json }}
+    job_template: {{ _effective_dispatcher_job_template | to_json }}
+    role: execute
+    state: present
+  - team: {{ _effective_team_name | to_json }}
+    lookup_organization: {{ _effective_aap_organization | to_json }}
+    job_template: {{ _effective_dispatcher_job_template | to_json }}
+    role: execute
+    state: present

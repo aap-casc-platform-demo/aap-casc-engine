@@ -2,19 +2,6 @@
 # GitLab Bootstrap provider implementation. It mirrors the GitHub ownership,
 # branch, foundation, caller, marker, and survey-fallback contracts.
 
-- name: "GL - Build Greenfield foundation targets"
-  ansible.builtin.set_fact:
-    _foundation_files:
-      - repo: "{{ platform_repo }}"
-        path: "base/organizations/{{ _effective_tenant_id }}.yml"
-        content: "{{ _org_foundation_content }}"
-        label: organization
-      - repo: "{{ platform_repo }}"
-        path: "base/teams/{{ _effective_tenant_id }}.yml"
-        content: "{{ _team_foundation_content }}"
-        label: team
-  when: onboarding_mode == 'greenfield'
-
 - name: "GL - Check requested tenant projects"
   ansible.builtin.uri:
     url: "{{ scm_base_url }}/api/v4/projects/{{ (tenant_scm_org ~ '/' ~ item) | urlencode() | replace('/', '%2F') }}"
@@ -143,15 +130,15 @@
   when:
     - not _create_missing_env_branches | bool
 
-- name: "GL - Resolve Greenfield foundation projects"
+- name: "GL - Resolve platform Bootstrap scaffold projects"
   ansible.builtin.uri:
     url: "{{ scm_base_url }}/api/v4/projects/{{ (platform_scm_org ~ '/' ~ item.repo) | urlencode() | replace('/', '%2F') }}"
     method: GET
     headers:
       PRIVATE-TOKEN: "{{ scm_api_token }}"
-  loop: "{{ _foundation_files | default([]) }}"
-  register: _gl_foundation_projects
-  when: onboarding_mode == 'greenfield'
+  loop: "{{ _platform_scaffold_files | default([]) }}"
+  register: _gl_platform_scaffold_projects
+  when: _platform_scaffold_files | length > 0
 
 - name: "GL - Check every existing foundation target before any foundation write"
   ansible.builtin.uri:
@@ -160,26 +147,26 @@
     headers:
       PRIVATE-TOKEN: "{{ scm_api_token }}"
     status_code: [200, 404]
-  loop: "{{ (_gl_foundation_projects.results | default([])) | product(_mapped_branches) | list }}"
+  loop: "{{ (_gl_platform_scaffold_projects.results | default([])) | product(_mapped_branches) | list }}"
   loop_control:
     label: "{{ item.0.item.repo }}@{{ item.1 }}:{{ item.0.item.path }}"
-  register: _gl_foundation_preflight
-  when: onboarding_mode == 'greenfield'
+  register: _gl_platform_scaffold_preflight
+  when: _platform_scaffold_files | length > 0
 
-- name: "GL - Require every Greenfield platform branch before tenant mutation"
+- name: "GL - Require every platform branch before tenant mutation"
   ansible.builtin.uri:
     url: "{{ scm_base_url }}/api/v4/projects/{{ item.0.json.id }}/repository/branches/{{ item.1 | urlencode() | replace('/', '%2F') }}"
     method: GET
     headers:
       PRIVATE-TOKEN: "{{ scm_api_token }}"
     status_code: [200, 404]
-  loop: "{{ (_gl_foundation_projects.results | default([])) | product(_mapped_branches) | list }}"
+  loop: "{{ (_gl_platform_scaffold_projects.results | default([])) | product(_mapped_branches) | list }}"
   loop_control:
     label: "{{ item.0.item.repo }}@{{ item.1 }}"
   register: _gl_platform_branch_preflight
-  when: onboarding_mode == 'greenfield'
+  when: _platform_scaffold_files | length > 0
 
-- name: "GL - Fail when a required Greenfield platform branch is missing"
+- name: "GL - Fail when a required platform branch is missing"
   ansible.builtin.assert:
     that:
       - item.status == 200
@@ -187,7 +174,7 @@
       Required platform branch {{ item.item.1 }} is missing from
       {{ platform_scm_org }}/{{ item.item.0.item.repo }}. Run Genesis branch convergence first.
   loop: "{{ _gl_platform_branch_preflight.results | default([]) }}"
-  when: onboarding_mode == 'greenfield'
+  when: _platform_scaffold_files | length > 0
 
 - name: "GL - Reject occupied foundation paths with different content"
   ansible.builtin.assert:
@@ -196,8 +183,8 @@
     fail_msg: >-
       Foundation path {{ item.item.0.item.repo }}@{{ item.item.1 }}:{{ item.item.0.item.path }}
       already contains different content. Refusing to take ownership.
-  loop: "{{ _gl_foundation_preflight.results | default([]) }}"
-  when: onboarding_mode == 'greenfield'
+  loop: "{{ _gl_platform_scaffold_preflight.results | default([]) }}"
+  when: _platform_scaffold_files | length > 0
 
 # Mutation begins only after all preflight checks above pass.
 - name: "GL - Resolve tenant group namespace ID"
@@ -395,7 +382,7 @@
   loop_control:
     label: "{{ item.0 }}@{{ item.1 }}"
 
-- name: "GL - Publish atomic Greenfield foundation on every mapped platform branch"
+- name: "GL - Publish atomic platform Bootstrap scaffold on every mapped platform branch"
   ansible.builtin.include_tasks: run_scaffold_commit.yml
   vars:
     scaffold_repo_url: "{{ scm_base_url }}/{{ platform_scm_org }}/{{ platform_repo }}.git"
@@ -404,13 +391,13 @@
     scaffold_provider: gitlab
     scaffold_commit_message: "Bootstrap: add foundation for {{ _effective_tenant_id }} [skip ci]"
     scaffold_manifest_entries: >-
-      {{ _foundation_files
+      {{ _platform_scaffold_files
          | map('combine', {'policy': 'immutable'})
          | list }}
   loop: "{{ _mapped_branches }}"
   loop_control:
     label: "{{ platform_repo }}@{{ item }}"
-  when: onboarding_mode == 'greenfield'
+  when: _platform_scaffold_files | length > 0
 
 - name: "GL - Verify final scaffold markers"
   ansible.builtin.uri:
@@ -463,17 +450,17 @@
       PRIVATE-TOKEN: "{{ scm_api_token }}"
   loop: "{{ _tenant_scaffold_files | product(_mapped_branches) | list }}"
 
-- name: "GL - Verify final Greenfield foundation content"
+- name: "GL - Verify final platform Bootstrap scaffold content"
   ansible.builtin.uri:
     url: "{{ scm_base_url }}/api/v4/projects/{{ item.0.json.id }}/repository/files/{{ item.0.item.path | urlencode() | replace('/', '%2F') }}?ref={{ item.1 | urlencode }}"
     method: GET
     headers:
       PRIVATE-TOKEN: "{{ scm_api_token }}"
-  loop: "{{ (_gl_foundation_projects.results | default([])) | product(_mapped_branches) | list }}"
+  loop: "{{ (_gl_platform_scaffold_projects.results | default([])) | product(_mapped_branches) | list }}"
   register: _gl_final_foundation_checks
-  when: onboarding_mode == 'greenfield'
+  when: _platform_scaffold_files | length > 0
 
-- name: "GL - Assert final Greenfield foundation content"
+- name: "GL - Assert final platform Bootstrap scaffold content"
   ansible.builtin.assert:
     that:
       - (item.json.content | b64decode) == item.item.0.item.content
@@ -481,7 +468,7 @@
       Foundation convergence failed for
       {{ item.item.0.item.repo }}@{{ item.item.1 }}:{{ item.item.0.item.path }}.
   loop: "{{ _gl_final_foundation_checks.results | default([]) }}"
-  when: onboarding_mode == 'greenfield'
+  when: _platform_scaffold_files | length > 0
 
 - name: "GL - Resolve control project for survey fallback"
   ansible.builtin.uri:

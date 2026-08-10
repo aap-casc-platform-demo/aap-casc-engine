@@ -78,9 +78,9 @@ team_name: Stores Automation
 Use a custom combined `repo_name`.
 
 Confirm YAML punctuation round-trips unchanged, markers contain the exact
-identity and resolved combined repository, Dispatcher and Drift both resolve
-that custom name, and bounded onboarding launches `platform` then only
-`tenant:stores`.
+identity and resolved combined repository, and Dispatcher and Drift both resolve
+that custom name. Confirm onboarding applies platform scope only and does not
+launch tenant desired state.
 
 ## 5. Optional naming policy
 
@@ -104,16 +104,17 @@ resource type, and non-scalar identity policy. Each must fail closed.
 
 ## 6. Brownfield gradual adoption
 
-Register an existing LDAP/SAML-style AAP Organization with
-`onboarding_mode: brownfield`, explicit `aap_organization`, and no `team_name`.
+Register an existing LDAP/SAML-style AAP Organization and Team with
+`onboarding_mode: brownfield`, explicit `aap_organization`, and exact
+`team_name`.
 
 Confirm:
 
 - SCM repositories are scaffolded;
 - no Organization or Team foundation is generated;
-- no onboarding fan-out occurs;
+- no Organization or Team is created or modified;
 - existing Teams, users, RBAC, credentials, and other objects are untouched;
-- supplying `team_name` or omitting `aap_organization` fails before mutation;
+- omitting `team_name` or `aap_organization` fails before mutation;
 - one separately committed existing object can be adopted without affecting
   undeclared objects.
 
@@ -144,30 +145,37 @@ conflicting marker and confirm no managed write occurs.
 
 Exercise survey fallback and inspect the registered records: Greenfield default
 omits redundant `aap_organization`, a distinct Greenfield Organization persists,
-and Brownfield retains its required explicit Organization with no `team_name`.
+and Brownfield retains its required explicit Organization and Team references.
 
-## 8. Greenfield onboarding (automatic bounded dispatch — current behavior)
+## 8. Platform-only onboarding and optional tenant Dispatcher
 
-After a Greenfield tenant is registered in `tenants.yml` and merged to the
-control branch, the control pipeline automatically performs **bounded onboarding
-dispatch**: platform scope first, then only the new tenant(s) across all
-environments.
+Start this validation from freshly generated version-5 tenant scaffolds. Legacy
+version-4 demo/nonproduction markers are pre-release artifacts and must be
+regenerated; no customer migration is required.
+
+After a tenant is registered in `tenants.yml`, Bootstrap scaffolds SCM and any
+platform desired state. The control pipeline applies platform scope across all
+mapped environments. It never applies tenant desired state during onboarding.
 
 Confirm:
 
 - SCM/foundation completion with markers on all mapped branches;
-- automatic platform-then-tenant Dispatcher launches across all environments;
-- if `dispatch_enabled=false`, scaffolding and foundation complete while
-  tenant-scope dispatch is skipped;
-- Brownfield receives no automatic onboarding dispatch.
+- only platform Dispatcher launches occur during onboarding;
+- the first tenant apply requires a later tenant-repository commit;
+- a Greenfield dedicated tenant creates Org+Team+JT+Execute roles;
+- a Brownfield dedicated tenant leaves the existing Org+Team unchanged and
+  creates only the central JT+Execute roles;
+- a shared Brownfield tenant remains SCM-only;
+- missing or mismatched dedicated JTs fail without shared-JT fallback;
+- two different tenant JTs may run independently, while two runs for one tenant
+  remain serialized by `allow_simultaneous=false`.
 
 ### Historical (removed): disabled fan-out continuation
 
 **ROADMAP-010 removed** the optional “defer automatic onboarding” config flag
 and the protected manual continuation operation that resumed a single pending
-Greenfield tenant. The engine now performs automatic bounded onboarding for all
-Greenfield tenants after Bootstrap completes. This validation case is no longer
-applicable.
+Greenfield tenant. The current engine always completes required platform-only
+onboarding after Bootstrap. This validation case is no longer applicable.
 
 ## 9. Pipeline and authorization matrix
 
@@ -177,8 +185,8 @@ For GitHub and GitLab, verify:
 - PR/MR to every mapped branch: validate only and no AAP deploy secrets;
 - mapped platform push: platform scope only;
 - mapped tenant push: matching tenant scope only;
-- control `tenants.yml` push: lifecycle/bootstrap path with automatic bounded
-  onboarding for Greenfield only;
+- control `tenants.yml` push: lifecycle/bootstrap path with platform-only
+  onboarding when platform desired state was scaffolded;
 - `[skip dispatch]`: skips Bootstrap, fan-out, and trigger;
 - forced Dispatcher timeout: nonzero pipeline failure;
 - missing `CONTROL_REPO_TOKEN`: fail closed;

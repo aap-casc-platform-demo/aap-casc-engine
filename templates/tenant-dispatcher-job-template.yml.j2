@@ -1,0 +1,21 @@
+---
+controller_templates:
+  - name: {{ _effective_dispatcher_job_template | to_json }}
+    description: {{ ('Tenant-bound AAP CasC Dispatcher for ' ~ _effective_tenant_id) | to_json }}
+    project: {{ _tenant_dispatcher_defaults.project | to_json }}
+    playbook: site.yml
+    inventory: {{ _tenant_dispatcher_defaults.inventory | to_json }}
+    execution_environment: {{ _tenant_dispatcher_defaults.execution_environment | to_json }}
+    credentials: {{ _tenant_dispatcher_defaults.credentials | to_json }}
+    extra_vars:
+      target_env: {{ _dispatcher_target_env | to_json }}
+      dispatch_scope: tenant
+      tenant_id: {{ _effective_tenant_id | to_json }}
+      triggered_repo: {{ (tenant_scm_org ~ '/' ~ _tenant_repository) | to_json }}
+      control_scm_org: {{ control_scm_org | to_json }}
+      control_repo: {{ control_repo | to_json }}
+      control_branch: {{ control_branch | to_json }}
+    ask_variables_on_launch: false
+    survey_enabled: false
+    allow_simultaneous: false
+    state: present

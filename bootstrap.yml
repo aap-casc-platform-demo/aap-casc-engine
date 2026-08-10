@@ -2,9 +2,9 @@
 # AAP Multi-Tenant CasC Engine - Bootstrap tenant SCM state.
 #
 # Greenfield creates a universal two-object foundation declaration: one AAP
-# Organization (keyed) and one Team (atomic overlay). Brownfield scaffolds SCM
-# only. Users, RBAC, credentials, execution environments, and SCM membership
-# remain customer policy.
+# Organization (keyed) and one Team (atomic overlay). Brownfield keeps those
+# existing objects unchanged. An optional central tenant-bound Dispatcher JT
+# reuses shared platform resources and credentials.
 
 - name: "AAP Multi-Tenant CasC Engine - Bootstrap Tenant"
   hosts: localhost
@@ -37,6 +37,7 @@
     dispatch_enabled: "{{ lookup('env', 'DISPATCH_ENABLED') | default('', true) }}"
     repo_visibility: "{{ lookup('env', 'REPO_VISIBILITY') | default('', true) }}"
     repo_name: "{{ lookup('env', 'REPO_NAME') | default('', true) }}"
+    dispatcher_job_template: "{{ lookup('env', 'DISPATCHER_JOB_TEMPLATE') | default('', true) }}"
 
     _tenant_types:
       - { folder: projects, basename: controller-projects, template: "templates/seed-controller-projects.yml.j2" }
@@ -141,7 +142,9 @@
              | combine({'repo_visibility': repo_visibility} if repo_visibility | length > 0 else {})
              | combine({'aap_organization': aap_organization} if aap_organization | length > 0 else {})
              | combine({'team_name': team_name} if team_name | length > 0 else {})
-             | combine({'repo_name': repo_name} if repo_name | length > 0 else {}) }}
+             | combine({'repo_name': repo_name} if repo_name | length > 0 else {})
+             | combine({'dispatcher_job_template': dispatcher_job_template}
+                       if dispatcher_job_template | length > 0 else {}) }}
 
     - name: "Resolve tenant from the shared registry contract"
       ansible.builtin.command:
@@ -172,6 +175,7 @@
         onboarding_mode: "{{ (_bootstrap_resolution.stdout | from_json).tenant.onboarding_mode }}"
         repo_visibility: "{{ (_bootstrap_resolution.stdout | from_json).tenant.repo_visibility }}"
         dispatch_enabled: "{{ (_bootstrap_resolution.stdout | from_json).tenant.dispatch_enabled | bool }}"
+        _effective_dispatcher_job_template: "{{ (_bootstrap_resolution.stdout | from_json).tenant.dispatcher_job_template | default('') }}"
         _repo_private: "{{ (_bootstrap_resolution.stdout | from_json).tenant.repo_visibility == 'private' }}"
 
     - name: "Derive effective control configuration"
@@ -183,6 +187,7 @@
         platform_repo: "{{ control_config.platform_repo | default('casc-platform-global') }}"
         bootstrap_jt_name: "{{ control_config.job_templates.bootstrap | default('jt-platform-bootstrap_tenant', true) }}"
         dispatcher_jt_name: "{{ control_config.job_templates.dispatcher | default('jt-platform-casc_dispatcher', true) }}"
+        _tenant_dispatcher_defaults: "{{ control_config.tenant_dispatcher_defaults | default({}) }}"
 
     - name: "Validate authoritative branch topology"
       ansible.builtin.assert:
@@ -231,11 +236,51 @@
         _team_foundation_content: "{{ lookup('template', 'templates/team-template.yml.j2') }}"
       when: onboarding_mode == 'greenfield'
 
+    - name: "Initialize platform Bootstrap scaffold"
+      ansible.builtin.set_fact:
+        _platform_scaffold_files: []
+
+    - name: "Add Greenfield Organization and Team foundation"
+      ansible.builtin.set_fact:
+        _platform_scaffold_files:
+          - repo: "{{ platform_repo }}"
+            path: "base/organizations/{{ _effective_tenant_id }}.yml"
+            content: "{{ _org_foundation_content }}"
+            label: organization
+          - repo: "{{ platform_repo }}"
+            path: "base/teams/{{ _effective_tenant_id }}.yml"
+            content: "{{ _team_foundation_content }}"
+            label: team
+      when: onboarding_mode == 'greenfield'
+
+    - name: "Add environment-bound tenant Dispatcher declarations"
+      ansible.builtin.set_fact:
+        _platform_scaffold_files: >-
+          {{ _platform_scaffold_files
+             + [{'repo': platform_repo,
+                 'path': item + '/templates/' + _effective_tenant_id + '-dispatcher.yml',
+                 'content': lookup('template', 'templates/tenant-dispatcher-job-template.yml.j2'),
+                 'label': 'tenant Dispatcher (' + item + ')'}] }}
+      vars:
+        _dispatcher_target_env: "{{ item }}"
+      loop: "{{ _env_branch_map.keys() | list }}"
+      when: _effective_dispatcher_job_template | length > 0
+
+    - name: "Add shared tenant Dispatcher Execute assignments"
+      ansible.builtin.set_fact:
+        _platform_scaffold_files: >-
+          {{ _platform_scaffold_files
+             + [{'repo': platform_repo,
+                 'path': 'base/roles/' + _effective_tenant_id + '-dispatcher.yml',
+                 'content': lookup('template', 'templates/tenant-dispatcher-roles.yml.j2'),
+                 'label': 'tenant Dispatcher Execute roles'}] }}
+      when: _effective_dispatcher_job_template | length > 0
+
     - name: "Reset foundation validation directory"
       ansible.builtin.file:
         path: "{{ bootstrap_validation_dir }}"
         state: absent
-      when: onboarding_mode == 'greenfield'
+      when: _platform_scaffold_files | length > 0
 
     - name: "Prepare foundation validation directory"
       ansible.builtin.file:
@@ -246,19 +291,26 @@
         - "{{ bootstrap_validation_dir }}"
         - "{{ bootstrap_validation_dir }}/base/organizations"
         - "{{ bootstrap_validation_dir }}/base/teams"
-      when: onboarding_mode == 'greenfield'
+        - "{{ bootstrap_validation_dir }}/base/roles"
+      when: _platform_scaffold_files | length > 0
 
-    - name: "Write rendered foundation for preflight validation"
+    - name: "Prepare environment Dispatcher validation directories"
+      ansible.builtin.file:
+        path: "{{ bootstrap_validation_dir }}/{{ item }}/templates"
+        state: directory
+        mode: '0700'
+      loop: "{{ _env_branch_map.keys() | list }}"
+      when: _effective_dispatcher_job_template | length > 0
+
+    - name: "Write rendered platform scaffold for preflight validation"
       ansible.builtin.copy:
         dest: "{{ bootstrap_validation_dir }}/{{ item.path }}"
         content: "{{ item.content }}"
         mode: '0600'
-      loop:
-        - path: "base/organizations/{{ _effective_tenant_id }}.yml"
-          content: "{{ _org_foundation_content | default('') }}"
-        - path: "base/teams/{{ _effective_tenant_id }}.yml"
-          content: "{{ _team_foundation_content | default('') }}"
-      when: onboarding_mode == 'greenfield'
+      loop: "{{ _platform_scaffold_files }}"
+      loop_control:
+        label: "{{ item.path }}"
+      when: _platform_scaffold_files | length > 0
 
     - name: "Check for optional customer naming policy"
       ansible.builtin.stat:
@@ -284,7 +336,7 @@
           - "{{ playbook_dir }}/roles/process_casc_config/defaults/main.yml"
       changed_when: false
       when:
-        - onboarding_mode == 'greenfield'
+        - _platform_scaffold_files | length > 0
         - _control_naming_rules.stat.exists
 
     - name: "Build lean survey fallback registry entry"
@@ -299,10 +351,11 @@
               'status': 'active'}
              | combine({'aap_organization': _effective_aap_organization}
                        if _effective_aap_organization != _effective_tenant_id else {})
-             | combine({'team_name': _effective_team_name}
-                       if onboarding_mode == 'greenfield' else {})
+             | combine({'team_name': _effective_team_name})
              | combine({'repo_name': _tenant_repository}
-                       if _tenant_repository != ('casc-tenant-' + _effective_tenant_id) else {}) }}
+                       if _tenant_repository != ('casc-tenant-' + _effective_tenant_id) else {})
+             | combine({'dispatcher_job_template': _effective_dispatcher_job_template}
+                       if _effective_dispatcher_job_template | length > 0 else {}) }}
 
     - name: "Log resolved Bootstrap contract"
       ansible.builtin.debug:
@@ -317,10 +370,11 @@
     - name: "Report Bootstrap completion"
       ansible.builtin.debug:
         msg: |
-          TENANT BOOTSTRAP COMPLETE (SCM-only)
+          TENANT BOOTSTRAP SCAFFOLD COMPLETE
           Tenant: {{ _effective_tenant_id }}
           AAP Organization: {{ _effective_aap_organization }}
-          Foundation: {{ 'Organization + Team' if onboarding_mode == 'greenfield' else 'none (Brownfield)' }}
+          Foundation: {{ 'Organization + Team' if onboarding_mode == 'greenfield' else 'existing Organization + Team reference' }}
+          Dispatcher: {{ _effective_dispatcher_job_template | default('shared', true) }}
           Repositories: {{ _tenant_repositories | join(', ') }}
           Environment branches: {{ _mapped_branches | join(', ') }}
 

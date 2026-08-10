@@ -11,8 +11,8 @@ workflow, and GitLab template.
 | Push to an environment-mapped tenant branch | `validate -> trigger` | Resolves repository to `tenant_id` and applies only that tenant scope |
 | Push to an unmapped feature branch | `validate` | None |
 | Pull request / merge request to any target branch | `validate` | None; deploy credentials are not exposed |
-| Control-branch push adding/correcting active Greenfield tenant | `validate -> bootstrap -> fanout` | SCM scaffold, Organization + Team foundation, then automatic bounded onboarding: platform scope first, then changed tenant(s) across all environments |
-| Control-branch push adding Brownfield tenant | `validate -> bootstrap` | SCM scaffold only; no foundation and no automatic onboarding fan-out |
+| Control-branch push adding/correcting active Greenfield tenant | `validate -> bootstrap -> fanout` | SCM scaffold, Organization + Team foundation, optional tenant Dispatcher/RBAC, then platform-only apply across all environments |
+| Control-branch push adding Brownfield tenant | `validate -> bootstrap` or `validate -> bootstrap -> fanout` | SCM scaffold; existing Org/Team unchanged. Platform-only fan-out runs only when an optional tenant Dispatcher/RBAC must be applied |
 | Control change to mutable `status` / `dispatch_enabled` only | `validate` | No Bootstrap action |
 | Push containing `[skip dispatch]` | `validate` | None |
 | Manual platform/tenant run on a mapped branch | `validate -> trigger` | Reapplies caller scope to mapped environment |
@@ -23,7 +23,7 @@ workflow, and GitLab template.
 |---|---|---|
 | `validate` | Every supported event | Structural YAML, control registry, optional naming policy, and OPA checks |
 | `bootstrap` | Control caller, control branch, exact `tenants.yml` change, actionable lifecycle diff | Launches Bootstrap JT sequentially for actionable tenants |
-| `fanout` | After successful Greenfield Bootstrap with fan-out tenant IDs | Bounded onboarding: platform scope first, then only the new tenant(s) across all environments; never `full` |
+| `fanout` | After Bootstrap writes platform desired state | Applies platform scope across all mapped environments; never tenant or `full` |
 | `trigger` | Mapped platform/tenant push or manual run | Launches one scoped Dispatcher and polls to terminal |
 
 ### Fan-out failure recovery
@@ -45,12 +45,14 @@ same behavior:
 - Allow identity/topology corrections or removal before any marker exists.
 - Reject identity/topology changes or removal after any marker exists.
 - Do not rerun Bootstrap for `status` or `dispatch_enabled` changes alone.
-- After Greenfield Bootstrap completes, automatically perform **bounded onboarding
-  dispatch**: platform scope first, then only the new tenant(s) across all
-  environments. Brownfield receives no automatic onboarding dispatch. If
-  `dispatch_enabled=false`, scaffolding and foundation still run; tenant apply
-  waits until re-enabled.
-- Greenfield requires `team_name`; Brownfield requires `aap_organization` and rejects `team_name`.
+- After Bootstrap writes platform desired state, automatically apply **platform
+  scope only** across mapped environments. No tenant desired state is applied
+  during onboarding; the first tenant apply requires a later tenant-repository
+  commit.
+- `team_name` is required for every tenant. Greenfield creates the Organization
+  and Team; Brownfield requires exact existing references and does not modify them.
+- An optional `dispatcher_job_template` selects a central tenant-bound JT.
+  Omission keeps the shared Dispatcher.
 
 ## Optional naming policy
 
@@ -81,8 +83,10 @@ validation does not receive AAP deployment credentials.
 ## Control revision
 
 Validation resolves an explicit `control_revision` or control-branch HEAD. The
-same revision is forwarded to Bootstrap, bounded onboarding, Dispatcher, and
-Drift. Missing required control metadata or a pin mismatch fails closed.
+same revision is forwarded to Bootstrap, platform onboarding, the shared
+Dispatcher, and Drift. Tenant-bound Dispatchers use fixed protected-branch
+coordinates and have no revision launch input. Missing required control metadata
+or a pin mismatch fails closed.
 
 ## Branch behavior
 
@@ -92,13 +96,15 @@ Drift. Missing required control metadata or a pin mismatch fails closed.
 - Mapped-branch pushes dispatch only the caller's platform or tenant scope.
 - Genesis and Bootstrap converge callers and required scaffold on every mapped branch.
 
-## Serialized baseline
+## Dispatcher routing and concurrency
 
-The production baseline requires Dispatcher `allow_simultaneous=false` on the
-Dispatcher Job Template. Launches are polled to terminal and timeout is failure.
-GitHub normal trigger uses workflow concurrency; GitLab normal trigger uses
-`resource_group`. Tenant-scoped concurrent dispatch remains a separate roadmap
-enhancement.
+The shared Dispatcher remains the default. A tenant may instead name a central
+tenant-bound Dispatcher in `tenants.yml`; Bootstrap scaffolds it from shared AAP
+resource references in `config.yml`. Every JT requires
+`allow_simultaneous=false`, every launch is polled to terminal, and timeout is a
+failure. Different tenant-bound JTs may run independently. A configured
+dedicated JT that is missing or mismatched fails closed without shared-JT
+fallback. Shared `dispatch_scope=full` is refused while any dedicated JT exists.
 
 ## GitLab parity
 

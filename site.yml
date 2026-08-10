@@ -123,6 +123,19 @@
       ansible.builtin.set_fact:
         _normalized_tenants: "{{ (_tenant_registry_validation.stdout | from_json).tenants }}"
 
+    - name: "Refuse shared full scope when tenant-bound Dispatchers exist"
+      ansible.builtin.assert:
+        that:
+          - >-
+            (_normalized_tenants
+             | selectattr('dispatcher_job_template', 'defined')
+             | list
+             | length) == 0
+        fail_msg: >-
+          dispatch_scope=full is unavailable while tenant-bound Dispatcher Job
+          Templates are configured. Dispatch platform and tenant scopes separately.
+      when: dispatch_scope == 'full'
+
     - name: "Assert target_env is defined in env_branch_map"
       ansible.builtin.assert:
         that:

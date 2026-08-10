@@ -2,19 +2,6 @@
 # GitHub Bootstrap provider implementation. All non-mutating ownership,
 # marker, branch, policy, and foundation checks complete before managed writes.
 
-- name: "GH - Build Greenfield foundation targets"
-  ansible.builtin.set_fact:
-    _foundation_files:
-      - repo: "{{ platform_repo }}"
-        path: "base/organizations/{{ _effective_tenant_id }}.yml"
-        content: "{{ _org_foundation_content }}"
-        label: organization
-      - repo: "{{ platform_repo }}"
-        path: "base/teams/{{ _effective_tenant_id }}.yml"
-        content: "{{ _team_foundation_content }}"
-        label: team
-  when: onboarding_mode == 'greenfield'
-
 - name: "GH - Check requested tenant repositories"
   ansible.builtin.uri:
     url: "https://api.github.com/repos/{{ tenant_scm_org }}/{{ item }}"
@@ -136,13 +123,13 @@
       Authorization: "Bearer {{ scm_api_token }}"
       Accept: "application/vnd.github.v3+json"
     status_code: [200, 404]
-  loop: "{{ (_foundation_files | default([])) | product(_mapped_branches) | list }}"
+  loop: "{{ (_platform_scaffold_files | default([])) | product(_mapped_branches) | list }}"
   loop_control:
     label: "{{ item.0.repo }}@{{ item.1 }}:{{ item.0.path }}"
-  register: _gh_foundation_preflight
-  when: onboarding_mode == 'greenfield'
+  register: _gh_platform_scaffold_preflight
+  when: _platform_scaffold_files | length > 0
 
-- name: "GH - Require every Greenfield platform branch before tenant mutation"
+- name: "GH - Require every platform branch before tenant mutation"
   ansible.builtin.uri:
     url: "https://api.github.com/repos/{{ platform_scm_org }}/{{ item.0 }}/git/ref/heads/{{ item.1 | urlencode }}"
     method: GET
@@ -150,13 +137,13 @@
       Authorization: "Bearer {{ scm_api_token }}"
       Accept: "application/vnd.github.v3+json"
     status_code: [200, 404]
-  loop: "{{ (_foundation_files | default([]) | map(attribute='repo') | unique | list) | product(_mapped_branches) | list }}"
+  loop: "{{ (_platform_scaffold_files | default([]) | map(attribute='repo') | unique | list) | product(_mapped_branches) | list }}"
   loop_control:
     label: "{{ item.0 }}@{{ item.1 }}"
   register: _gh_platform_branch_preflight
-  when: onboarding_mode == 'greenfield'
+  when: _platform_scaffold_files | length > 0
 
-- name: "GH - Fail when a required Greenfield platform branch is missing"
+- name: "GH - Fail when a required platform branch is missing"
   ansible.builtin.assert:
     that:
       - item.status == 200
@@ -164,7 +151,7 @@
       Required platform branch {{ item.item.1 }} is missing from
       {{ platform_scm_org }}/{{ item.item.0 }}. Run Genesis branch convergence first.
   loop: "{{ _gh_platform_branch_preflight.results | default([]) }}"
-  when: onboarding_mode == 'greenfield'
+  when: _platform_scaffold_files | length > 0
 
 - name: "GH - Reject occupied foundation paths with different content"
   ansible.builtin.assert:
@@ -173,10 +160,10 @@
     fail_msg: >-
       Foundation path {{ item.item.0.repo }}@{{ item.item.1 }}:{{ item.item.0.path }}
       already contains different content. Refusing to take ownership.
-  loop: "{{ _gh_foundation_preflight.results | default([]) }}"
+  loop: "{{ _gh_platform_scaffold_preflight.results | default([]) }}"
   loop_control:
     label: "{{ item.item.0.repo }}@{{ item.item.1 }}:{{ item.item.0.path }}"
-  when: onboarding_mode == 'greenfield'
+  when: _platform_scaffold_files | length > 0
 
 # Mutation begins only after all preflight checks above pass.
 - name: "GH - Create missing tenant repositories"
@@ -429,7 +416,7 @@
   loop_control:
     label: "{{ item.0 }}@{{ item.1 }}"
 
-- name: "GH - Publish atomic Greenfield foundation on every mapped platform branch"
+- name: "GH - Publish atomic platform Bootstrap scaffold on every mapped platform branch"
   ansible.builtin.include_tasks: run_scaffold_commit.yml
   vars:
     scaffold_repo_url: "https://github.com/{{ platform_scm_org }}/{{ platform_repo }}.git"
@@ -438,13 +425,13 @@
     scaffold_provider: github
     scaffold_commit_message: "Bootstrap: add foundation for {{ _effective_tenant_id }} [skip ci]"
     scaffold_manifest_entries: >-
-      {{ _foundation_files
+      {{ _platform_scaffold_files
          | map('combine', {'policy': 'immutable'})
          | list }}
   loop: "{{ _mapped_branches }}"
   loop_control:
     label: "{{ platform_repo }}@{{ item }}"
-  when: onboarding_mode == 'greenfield'
+  when: _platform_scaffold_files | length > 0
 
 - name: "GH - Verify final scaffold markers"
   ansible.builtin.uri:
@@ -500,18 +487,18 @@
       Accept: "application/vnd.github.v3+json"
   loop: "{{ _tenant_scaffold_files | product(_mapped_branches) | list }}"
 
-- name: "GH - Verify final Greenfield foundation content"
+- name: "GH - Verify final platform Bootstrap scaffold content"
   ansible.builtin.uri:
     url: "https://api.github.com/repos/{{ platform_scm_org }}/{{ item.0.repo }}/contents/{{ item.0.path }}?ref={{ item.1 | urlencode }}"
     method: GET
     headers:
       Authorization: "Bearer {{ scm_api_token }}"
       Accept: "application/vnd.github.v3+json"
-  loop: "{{ (_foundation_files | default([])) | product(_mapped_branches) | list }}"
+  loop: "{{ (_platform_scaffold_files | default([])) | product(_mapped_branches) | list }}"
   register: _gh_final_foundation_checks
-  when: onboarding_mode == 'greenfield'
+  when: _platform_scaffold_files | length > 0
 
-- name: "GH - Assert final Greenfield foundation content"
+- name: "GH - Assert final platform Bootstrap scaffold content"
   ansible.builtin.assert:
     that:
       - (item.json.content | b64decode) == item.item.0.content
@@ -519,7 +506,7 @@
       Foundation convergence failed for
       {{ item.item.0.repo }}@{{ item.item.1 }}:{{ item.item.0.path }}.
   loop: "{{ _gh_final_foundation_checks.results | default([]) }}"
-  when: onboarding_mode == 'greenfield'
+  when: _platform_scaffold_files | length > 0
 
 - name: "GH - Read current tenant registry for survey fallback"
   ansible.builtin.uri:

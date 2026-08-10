@@ -954,6 +954,15 @@ TENANT_RECORD_FIELDS = {
     "onboarding_mode",
     "status",
     "dispatch_enabled",
+    "dispatcher_job_template",
+}
+
+TENANT_DISPATCHER_DEFAULT_FIELDS = {
+    "project",
+    "inventory",
+    "execution_environment",
+    "credentials",
+    "launcher_user",
 }
 
 
@@ -984,11 +993,15 @@ def normalize_tenant_record(record: dict[str, Any]) -> dict[str, Any]:
         )
     aap_organization = explicit_org.strip() if explicit_org else tenant_id
 
-    team_name = record.get("team_name")
-    if onboarding_mode == "greenfield":
-        team_name = _required_string(record, "team_name", tenant_id)
-    elif team_name not in (None, ""):
-        raise ValueError(f"Tenant {tenant_id} brownfield onboarding does not accept team_name")
+    team_name = _required_string(record, "team_name", tenant_id)
+
+    dispatcher_job_template = record.get("dispatcher_job_template")
+    if dispatcher_job_template is not None:
+        if not isinstance(dispatcher_job_template, str) or not dispatcher_job_template.strip():
+            raise ValueError(
+                f"Tenant {tenant_id} dispatcher_job_template must be a non-empty string"
+            )
+        dispatcher_job_template = dispatcher_job_template.strip()
 
     tenant_scm_org = _required_string(record, "tenant_scm_org", tenant_id)
     repo_mode = record.get("repo_mode", "create")
@@ -1017,13 +1030,50 @@ def normalize_tenant_record(record: dict[str, Any]) -> dict[str, Any]:
             "status": status,
             "dispatch_enabled": dispatch_enabled,
             "repository": repository,
+            **(
+                {"dispatcher_job_template": dispatcher_job_template}
+                if dispatcher_job_template
+                else {}
+            ),
         }
     )
     normalized.pop("repo_name", None)
-    if onboarding_mode == "greenfield":
-        normalized["team_name"] = team_name
-    else:
-        normalized.pop("team_name", None)
+    normalized["team_name"] = team_name
+    return normalized
+
+
+def tenant_dispatcher_defaults(cfg: dict[str, Any]) -> dict[str, Any]:
+    """Validate the optional shared references used by tenant-bound Dispatchers."""
+    raw = cfg.get("tenant_dispatcher_defaults")
+    if not isinstance(raw, dict):
+        raise ValueError(
+            "config.yml tenant_dispatcher_defaults must be a mapping when a tenant "
+            "uses dispatcher_job_template"
+        )
+    unknown = sorted(set(raw) - TENANT_DISPATCHER_DEFAULT_FIELDS)
+    if unknown:
+        raise ValueError(
+            "config.yml tenant_dispatcher_defaults contains unsupported fields: "
+            + ", ".join(unknown)
+        )
+    normalized = {
+        field: _required_string(raw, field)
+        for field in TENANT_DISPATCHER_DEFAULT_FIELDS - {"credentials"}
+    }
+    credentials = raw.get("credentials")
+    if not isinstance(credentials, list) or not credentials:
+        raise ValueError(
+            "config.yml tenant_dispatcher_defaults credentials must be a non-empty list"
+        )
+    if any(not isinstance(item, str) or not item.strip() for item in credentials):
+        raise ValueError(
+            "config.yml tenant_dispatcher_defaults credentials must contain non-empty strings"
+        )
+    normalized["credentials"] = [item.strip() for item in credentials]
+    if len(normalized["credentials"]) != len(set(normalized["credentials"])):
+        raise ValueError(
+            "config.yml tenant_dispatcher_defaults credentials must be unique"
+        )
     return normalized
 
 
@@ -1077,6 +1127,12 @@ def validate_tenant_registry(
     repo_owners: dict[tuple[str, str], str] = {
         owner: "control/platform" for owner in _platform_repo_owners(cfg or {})
     }
+    shared_dispatcher = ""
+    if cfg is not None:
+        job_templates = cfg.get("job_templates", {})
+        if isinstance(job_templates, dict):
+            shared_dispatcher = str(job_templates.get("dispatcher") or "").strip()
+    dispatcher_owners: dict[str, str] = {}
     for index, tenant in enumerate(normalized):
         tenant_id = tenant["tenant_id"]
         if tenant_id in ids:
@@ -1097,10 +1153,24 @@ def validate_tenant_registry(
                 f"{repo_owners[owner]} and {tenant_id}"
             )
         repo_owners[owner] = tenant_id
+        dedicated_dispatcher = tenant.get("dispatcher_job_template")
+        if dedicated_dispatcher:
+            if dedicated_dispatcher == shared_dispatcher:
+                raise ValueError(
+                    f"Tenant {tenant_id} dispatcher_job_template must differ from the shared Dispatcher JT"
+                )
+            if dedicated_dispatcher in dispatcher_owners:
+                raise ValueError(
+                    f"Dispatcher Job Template '{dedicated_dispatcher}' is assigned to both "
+                    f"{dispatcher_owners[dedicated_dispatcher]} and {tenant_id}"
+                )
+            dispatcher_owners[dedicated_dispatcher] = tenant_id
+    if dispatcher_owners and cfg is not None:
+        tenant_dispatcher_defaults(cfg)
     return normalized
 
 
-SCAFFOLD_VERSION = 4
+SCAFFOLD_VERSION = 5
 
 
 def build_scaffold_marker(
@@ -1122,9 +1192,10 @@ def build_scaffold_marker(
         "repo_visibility": normalized["repo_visibility"],
         "onboarding_mode": normalized["onboarding_mode"],
         "repository": repository,
+        "team_name": normalized["team_name"],
     }
-    if normalized["onboarding_mode"] == "greenfield":
-        marker["team_name"] = normalized["team_name"]
+    if normalized.get("dispatcher_job_template"):
+        marker["dispatcher_job_template"] = normalized["dispatcher_job_template"]
     return marker
 
 
@@ -1167,9 +1238,10 @@ def tenant_immutable_projection(tenant: dict[str, Any]) -> dict[str, Any]:
         "repo_visibility": normalized["repo_visibility"],
         "onboarding_mode": normalized["onboarding_mode"],
         "repository": normalized["repository"],
+        "team_name": normalized["team_name"],
     }
-    if normalized["onboarding_mode"] == "greenfield":
-        projection["team_name"] = normalized["team_name"]
+    if normalized.get("dispatcher_job_template"):
+        projection["dispatcher_job_template"] = normalized["dispatcher_job_template"]
     return projection
 
 
@@ -1345,6 +1417,7 @@ def resolve_bootstrap_request(
         "repo_name",
         "onboarding_mode",
         "repo_visibility",
+        "dispatcher_job_template",
     )
     conflicts = []
     registered_public = public_tenant_runtime(registered)
@@ -1364,6 +1437,78 @@ def resolve_bootstrap_request(
             + ", ".join(conflicts)
         )
     return registered_public, True
+
+
+def resolve_dispatch_route(
+    tenants_doc: dict[str, Any],
+    cfg: dict[str, Any],
+    *,
+    caller_role: str,
+    target_env: str,
+    triggered_repo: str,
+) -> dict[str, Any]:
+    """Resolve the shared or tenant-bound Dispatcher for one pipeline run."""
+    if caller_role not in {"platform", "tenant"}:
+        raise ValueError("caller_role must be platform or tenant")
+    env_map = cfg.get("env_branch_map")
+    if not isinstance(env_map, dict) or target_env not in env_map:
+        raise ValueError(f"target_env '{target_env}' is not configured")
+    shared_jt = (cfg.get("job_templates") or {}).get("dispatcher")
+    if not isinstance(shared_jt, str) or not shared_jt.strip():
+        raise ValueError("config.yml job_templates.dispatcher must be a non-empty string")
+    shared_jt = shared_jt.strip()
+    tenants = validate_tenant_registry(tenants_doc, cfg)
+
+    if caller_role == "platform":
+        return {
+            "dedicated": False,
+            "job_template": shared_jt,
+            "dispatch_scope": "platform",
+            "target_env": target_env,
+        }
+
+    repo = triggered_repo.strip()
+    matches = [
+        tenant
+        for tenant in tenants
+        if tenant["status"] == "active"
+        and tenant["dispatch_enabled"]
+        and f"{tenant['tenant_scm_org']}/{tenant['repository']}" == repo
+    ]
+    if len(matches) != 1:
+        raise ValueError(
+            f"Triggered repository '{repo}' must resolve to exactly one active, dispatch-enabled tenant"
+        )
+    tenant = matches[0]
+    dedicated_jt = tenant.get("dispatcher_job_template")
+    if not dedicated_jt:
+        return {
+            "dedicated": False,
+            "job_template": shared_jt,
+            "dispatch_scope": "tenant",
+            "target_env": target_env,
+            "tenant_id": tenant["tenant_id"],
+            "triggered_repo": repo,
+        }
+
+    return {
+        "dedicated": True,
+        "job_template": dedicated_jt,
+        "dispatch_scope": "tenant",
+        "target_env": target_env,
+        "tenant_id": tenant["tenant_id"],
+        "triggered_repo": repo,
+        "fixed_extra_vars": {
+            "target_env": target_env,
+            "dispatch_scope": "tenant",
+            "tenant_id": tenant["tenant_id"],
+            "triggered_repo": repo,
+            "control_scm_org": cfg.get("control_scm_org")
+            or cfg.get("platform_scm_org"),
+            "control_repo": cfg.get("control_repo"),
+            "control_branch": cfg.get("control_branch"),
+        },
+    }
 
 
 def cmd_ensure_control(args: argparse.Namespace) -> int:
@@ -1457,6 +1602,24 @@ def cmd_resolve_bootstrap(args: argparse.Namespace) -> int:
     request = json.loads(args.request_json)
     tenant, registered = resolve_bootstrap_request(tenants_doc, cfg, request)
     print(json.dumps({"tenant": tenant, "registered": registered}, sort_keys=True))
+    return 0
+
+
+def cmd_resolve_dispatch_route(args: argparse.Namespace) -> int:
+    cfg = load_yaml_file(args.config)
+    tenants_doc = load_yaml_file(args.tenants)
+    route = resolve_dispatch_route(
+        tenants_doc,
+        cfg,
+        caller_role=args.caller_role,
+        target_env=args.target_env,
+        triggered_repo=args.triggered_repo,
+    )
+    payload = json.dumps(route, sort_keys=True)
+    if args.output:
+        with open(args.output, "w", encoding="utf-8") as handle:
+            handle.write(payload + "\n")
+    print(payload)
     return 0
 
 
@@ -1609,6 +1772,18 @@ def build_parser() -> argparse.ArgumentParser:
     bootstrap.add_argument("--tenants", required=True)
     bootstrap.add_argument("--request-json", required=True)
     bootstrap.set_defaults(func=cmd_resolve_bootstrap)
+
+    route = sub.add_parser(
+        "resolve-dispatch-route",
+        help="Resolve the shared or tenant-bound Dispatcher for one pipeline run",
+    )
+    route.add_argument("--config", required=True)
+    route.add_argument("--tenants", required=True)
+    route.add_argument("--caller-role", choices=["platform", "tenant"], required=True)
+    route.add_argument("--target-env", required=True)
+    route.add_argument("--triggered-repo", default="")
+    route.add_argument("--output", default="")
+    route.set_defaults(func=cmd_resolve_dispatch_route)
 
     marker = sub.add_parser("scaffold-marker", help="Render or compare a scaffold marker")
     marker.add_argument("--tenant-json", required=True)

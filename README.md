@@ -15,6 +15,8 @@ and drift workflows that customers would otherwise build themselves.
 - Repository creation or governed pre-created repository scaffolding.
 - Combined control, platform, and tenant repositories with optional custom names.
 - Greenfield and Brownfield tenant onboarding.
+- Optional central tenant-bound Dispatcher JTs for independent tenant runs;
+  omission keeps the shared serialized Dispatcher.
 - Optional, customer-owned naming policy.
 - Scoped platform or tenant dispatch through `infra.aap_configuration.dispatch`.
 - Report-only Drift for missing declared Organizations, teams, credential types, projects, and inventories (apply via Dispatcher).
@@ -147,6 +149,7 @@ execution-environment associations remain normal customer desired state.
 tenants:
   - tenant_id: legacy_app
     aap_organization: Existing LDAP/SAML Organization
+    team_name: Existing Automation Team
     tenant_scm_org: example-tenants
     repo_name: legacy-app-aap-casc
     repo_mode: create
@@ -154,11 +157,13 @@ tenants:
     status: active
 ```
 
-Brownfield Bootstrap is SCM-only. It requires the exact existing AAP
-Organization name, rejects `team_name`, writes no foundation YAML, and performs
-no onboarding dispatch. Existing AAP objects remain unchanged until the customer
-declares them in desired-state YAML. Use `repo_mode=existing` when the tenant
-repository is pre-created.
+Brownfield Bootstrap requires exact existing AAP Organization and Team names
+and never creates or modifies them. With the shared Dispatcher it is SCM-only.
+When `dispatcher_job_template` is configured, Bootstrap additionally scaffolds
+the central tenant-bound Dispatcher and Execute roles as platform desired state;
+the normal platform apply resolves those references before onboarding completes.
+Onboarding never applies tenant desired state. Use `repo_mode=existing` when the
+tenant repository is pre-created.
 
 ### 4. Apply one scope
 
@@ -175,7 +180,8 @@ ansible-playbook site.yml \
 |---|---|
 | `tenant_id` | Required stable engine key. Must match `^[a-z][a-z0-9_]*$`, maximum 64 characters. |
 | `aap_organization` | Exact AAP Organization name. Optional for Greenfield; required for Brownfield. |
-| `team_name` | Exact Team created by Greenfield Bootstrap. Required for Greenfield; forbidden for Brownfield. |
+| `team_name` | Required exact Team name. Greenfield creates it; Brownfield references the existing Team without modifying it. |
+| `dispatcher_job_template` | Optional customer-owned central Dispatcher JT name. Omit it to use the shared Dispatcher. |
 
 Repository routing is `repository -> tenants.yml -> tenant_id`. It never infers
 the AAP Organization from a repository name.
@@ -233,10 +239,12 @@ applies only to resource types explicitly present in the policy.
   collection's `change_me` fallback.
 - The production baseline is serialized and requires Dispatcher
   `allow_simultaneous=false`.
+- Optional tenant-bound Dispatcher JTs reuse the shared Project, Inventory, EE,
+  credentials, and CI launcher. Each JT remains serialized while different
+  tenant JTs may run independently.
 
 ## Current limitations
 
-- Scoped Dispatcher concurrency is a separate future enhancement.
 - Launch, bulk-host create, and repository-sync action keys remain unsupported.
 - Drift is report-only (`identity_presence`) for Organizations, teams,
   credential types, projects, and inventories. Undeclared live objects are
