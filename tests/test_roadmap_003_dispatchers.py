@@ -202,7 +202,9 @@ class TemplateTests(unittest.TestCase):
         )["controller_roles"]
         self.assertEqual(roles[0]["user"], "svc_casc_launcher")
         self.assertEqual(roles[1]["team"], "Stores Automation")
-        self.assertEqual(roles[1]["lookup_organization"], "stores")
+        self.assertEqual(roles[0]["lookup_organization"], "Default")
+        self.assertEqual(roles[1]["lookup_organization"], "Default")
+        self.assertNotIn("organization", roles[1])
         self.assertTrue(all(item["role"] == "execute" for item in roles))
 
 
