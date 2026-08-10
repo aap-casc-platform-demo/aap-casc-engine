@@ -377,17 +377,28 @@ CI supplies these as lowercase API `extra_vars`. Without this survey allowlist
 ##### Optional tenant-bound Dispatcher — fixed binding, no survey
 
 Bootstrap creates one JT per mapped `target_env` named
-`{dispatcher_job_template}-{target_env}` with fixed `target_env`,
-`dispatch_scope: tenant`, `tenant_id`, tenant repository, and control
-coordinates. It reuses the shared Engine Project, localhost Inventory, EE,
-credentials, and CI launcher configured in `tenant_dispatcher_defaults`. AAP
-infers each JT's `Default` Organization from that shared Project. JTs have no
-survey and accept no launch-time binding overrides. The pipeline resolves the
-env-specific JT by exact name and verifies the fixed binding before launch; any
-mismatch fails without shared-JT fallback.
+`{dispatcher_job_template}-{target_env}` with fixed `scm_base_url`,
+`platform_scm_org`, `target_env`, `dispatch_scope: tenant`, `tenant_id`, tenant
+repository, and control coordinates. It reuses the shared Engine Project,
+localhost Inventory, EE, credentials, and CI launcher configured in
+`tenant_dispatcher_defaults`. AAP infers each JT's `Default` Organization from
+that shared Project. JTs have no survey and accept no launch-time binding
+overrides. The pipeline resolves the env-specific JT by exact name and verifies
+the full fixed binding (including `scm_base_url` and `platform_scm_org`) before
+launch; any mismatch fails without shared-JT fallback. Registry validation
+rejects base and `{base}-{target_env}` names that collide with any central
+engine JT. Execute roles grant the tenant Team via the org-qualified named URL
+`{team_name}++{aap_organization}`.
 The generated declarations follow the catalog contracts for
 [`controller_templates`](RESOURCE_CATALOG.md#controller_templates) and
 [`controller_roles`](RESOURCE_CATALOG.md#controller_roles).
+
+Tenant-scoped apply still uses the shared AAP apply credential. Tenant-bound JTs
+separate and serialize execution queues; they do not create an additional AAP
+authorization boundary for the shared credential. Protect tenant repositories
+with trusted authors, branch protection, and required approvals. The engine
+does not claim hard runtime isolation between authors who can merge arbitrary
+desired state.
 
 ##### Drift — fixed Variables (lowercase) + optional survey allowlist
 
@@ -709,6 +720,7 @@ env vars.
 | Field | Source | Notes |
 |---|---|---|
 | `scm_provider` | `control` (seeded) | `github` \| `gitlab` |
+| `scm_base_url` | `control` (seeded) | Exact GitHub, GitHub Enterprise, or GitLab base URL used by fixed Dispatcher bindings |
 | `control_scm_org`, `control_repo`, `control_branch` | `control` | Copied into JT fixed Variables (lowercase) |
 | `platform_scm_org`, `platform_repo` | `control` | Combined platform scalar |
 | `create_missing_env_branches` | `control` | Boolean |
@@ -728,6 +740,7 @@ Example:
 ```yaml
 ---
 scm_provider: github
+scm_base_url: https://github.com
 control_scm_org: example-platform
 control_repo: casc-platform-control
 control_branch: main

@@ -242,6 +242,9 @@ applies only to resource types explicitly present in the policy.
 - Optional tenant-bound Dispatcher JTs reuse the shared Project, Inventory, EE,
   credentials, and CI launcher. Each JT remains serialized while different
   tenant JTs may run independently.
+- Tenant-bound JTs separate execution queues; because they reuse one apply
+  credential, trusted authors, branch protection, and approvals remain the
+  tenant desired-state security boundary.
 
 ## Current limitations
 

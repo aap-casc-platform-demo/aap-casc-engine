@@ -1,6 +1,7 @@
 #jinja2: trim_blocks: False
 ---
 scm_provider: {{ scm_provider | to_json }}
+scm_base_url: {{ scm_base_url | to_json }}
 control_scm_org: {{ control_scm_org | to_json }}
 control_repo: {{ control_repo | to_json }}
 control_branch: {{ control_branch | to_json }}

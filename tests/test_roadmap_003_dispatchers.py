@@ -20,6 +20,8 @@ import dispatcher_launch  # noqa: E402
 
 def config(**overrides):
     value = {
+        "scm_provider": "github",
+        "scm_base_url": "https://github.com",
         "control_scm_org": "example-platform",
         "control_repo": "casc-platform-control",
         "control_branch": "main",
@@ -84,6 +86,8 @@ class RegistryAndRoutingTests(unittest.TestCase):
         self.assertEqual(
             route["fixed_extra_vars"],
             {
+                "scm_base_url": "https://github.com",
+                "platform_scm_org": "example-platform",
                 "target_env": "poc",
                 "dispatch_scope": "tenant",
                 "tenant_id": "stores",
@@ -109,7 +113,7 @@ class RegistryAndRoutingTests(unittest.TestCase):
 
     def test_dedicated_names_are_unique_and_not_shared(self):
         cfg = config(tenant_dispatcher_defaults=dispatcher_defaults())
-        with self.assertRaisesRegex(ValueError, "must differ from the shared"):
+        with self.assertRaisesRegex(ValueError, "central engine Job Templates"):
             casc_runtime.validate_tenant_registry(
                 {
                     "tenants": [
@@ -131,6 +135,58 @@ class RegistryAndRoutingTests(unittest.TestCase):
                     ]
                 },
                 cfg,
+            )
+
+    def test_env_bound_dispatcher_names_cannot_collide_with_engine_jts(self):
+        cfg = config(
+            tenant_dispatcher_defaults=dispatcher_defaults(),
+            env_branch_map={"casc_dispatcher": "main"},
+            job_templates={"dispatcher": "jt-platform-casc_dispatcher"},
+        )
+        with self.assertRaisesRegex(ValueError, "env-bound Dispatcher JT"):
+            casc_runtime.validate_tenant_registry(
+                {
+                    "tenants": [
+                        tenant(dispatcher_job_template="jt-platform")
+                    ]
+                },
+                cfg,
+            )
+
+    def test_dedicated_route_uses_persisted_custom_scm_base_url(self):
+        cfg = config(
+            scm_provider="gitlab",
+            scm_base_url="https://gitlab.example.com/",
+            tenant_dispatcher_defaults=dispatcher_defaults(),
+        )
+        route = casc_runtime.resolve_dispatch_route(
+            {
+                "tenants": [
+                    tenant(dispatcher_job_template="jt-stores-dispatcher")
+                ]
+            },
+            cfg,
+            caller_role="tenant",
+            target_env="prod",
+            triggered_repo="example-tenants/casc-tenant-stores",
+        )
+        self.assertEqual(
+            route["fixed_extra_vars"]["scm_base_url"],
+            "https://gitlab.example.com/",
+        )
+
+        cfg.pop("scm_base_url")
+        with self.assertRaisesRegex(ValueError, "scm_base_url"):
+            casc_runtime.resolve_dispatch_route(
+                {
+                    "tenants": [
+                        tenant(dispatcher_job_template="jt-stores-dispatcher")
+                    ]
+                },
+                cfg,
+                caller_role="tenant",
+                target_env="prod",
+                triggered_repo="example-tenants/casc-tenant-stores",
             )
 
     def test_brownfield_requires_existing_team_reference(self):
@@ -162,7 +218,6 @@ class RegistryAndRoutingTests(unittest.TestCase):
         renamed = dict(marker, dispatcher_job_template="jt-renamed")
         with self.assertRaisesRegex(ValueError, "dispatcher_job_template"):
             casc_runtime.validate_scaffold_marker(marker, renamed)
-
 
 class TemplateTests(unittest.TestCase):
     def setUp(self):
@@ -213,11 +268,26 @@ class TemplateTests(unittest.TestCase):
             {"jt-platform-casc_dispatcher-stores-prod"},
         )
         self.assertEqual(roles[0]["user"], "svc_casc_launcher")
-        self.assertEqual(roles[1]["team"], "Stores Automation")
+        self.assertEqual(roles[1]["team"], "Stores Automation++stores")
         self.assertEqual(roles[0]["lookup_organization"], "Default")
         self.assertEqual(roles[1]["lookup_organization"], "Default")
         self.assertNotIn("organization", roles[1])
         self.assertTrue(all(item["role"] == "execute" for item in roles))
+
+        escaped_context = {
+            **context,
+            "_effective_team_name": "Stores + Automation",
+            "_effective_aap_organization": "Retail + Stores",
+        }
+        escaped_roles = yaml.safe_load(
+            self.jinja.get_template("templates/tenant-dispatcher-roles.yml.j2").render(
+                **escaped_context
+            )
+        )["controller_roles"]
+        self.assertEqual(
+            escaped_roles[1]["team"],
+            "Stores [+] Automation++Retail [+] Stores",
+        )
 
 
 class LauncherTests(unittest.TestCase):
@@ -369,6 +439,13 @@ class LauncherTests(unittest.TestCase):
 
 
 class PipelineTests(unittest.TestCase):
+    def test_control_config_persists_scm_base_url(self):
+        seed = (ROOT / "templates/seed-config.yml.j2").read_text(encoding="utf-8")
+        bootstrap = (ROOT / "bootstrap.yml").read_text(encoding="utf-8")
+        self.assertIn("scm_base_url: {{ scm_base_url | to_json }}", seed)
+        self.assertIn("Verify authoritative SCM connection", bootstrap)
+        self.assertIn("control_config.scm_base_url == scm_base_url", bootstrap)
+
     def test_all_pipelines_use_platform_only_onboarding_and_route_later_commits(self):
         pipelines = (
             ROOT / ".github/workflows/casc-validate-and-trigger.yml",
@@ -391,7 +468,6 @@ class PipelineTests(unittest.TestCase):
             site.index("Record normalized tenant runtime data"),
             site.index("Refuse shared full scope"),
         )
-
 
 if __name__ == "__main__":
     unittest.main()

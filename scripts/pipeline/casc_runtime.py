@@ -734,6 +734,26 @@ def resolve_jt_names(cfg: dict[str, Any]) -> dict[str, str]:
     return names
 
 
+def control_scm_base_url(cfg: dict[str, Any]) -> str:
+    """Resolve the SCM base URL used by dedicated Dispatcher fixed bindings."""
+    reject_legacy_config_fields(cfg)
+    explicit = cfg.get("scm_base_url")
+    if isinstance(explicit, str) and explicit.strip():
+        return explicit.strip()
+    raise ValueError(
+        "config.yml scm_base_url must be a non-empty string when tenant-bound "
+        "Dispatcher Job Templates are configured"
+    )
+
+
+def env_bound_dispatcher_names(base_name: str, cfg: dict[str, Any]) -> list[str]:
+    """Return live JT names `{base}-{target_env}` for every mapped environment."""
+    env_map = cfg.get("env_branch_map")
+    if not isinstance(env_map, dict) or not env_map:
+        raise ValueError("config.yml env_branch_map must be a non-empty mapping")
+    return [f"{base_name}-{env}" for env in env_map]
+
+
 def github_raw(org: str, repo: str, path: str, ref: str, token: str) -> bytes:
     url = (
         f"https://api.github.com/repos/{org}/{repo}/contents/"
@@ -1127,12 +1147,9 @@ def validate_tenant_registry(
     repo_owners: dict[tuple[str, str], str] = {
         owner: "control/platform" for owner in _platform_repo_owners(cfg or {})
     }
-    shared_dispatcher = ""
-    if cfg is not None:
-        job_templates = cfg.get("job_templates", {})
-        if isinstance(job_templates, dict):
-            shared_dispatcher = str(job_templates.get("dispatcher") or "").strip()
+    engine_jt_names = set(resolve_jt_names(cfg).values()) if cfg is not None else set()
     dispatcher_owners: dict[str, str] = {}
+    bound_dispatcher_owners: dict[str, str] = {}
     for index, tenant in enumerate(normalized):
         tenant_id = tenant["tenant_id"]
         if tenant_id in ids:
@@ -1155,18 +1172,43 @@ def validate_tenant_registry(
         repo_owners[owner] = tenant_id
         dedicated_dispatcher = tenant.get("dispatcher_job_template")
         if dedicated_dispatcher:
-            if dedicated_dispatcher == shared_dispatcher:
+            if dedicated_dispatcher in engine_jt_names:
                 raise ValueError(
-                    f"Tenant {tenant_id} dispatcher_job_template must differ from the shared Dispatcher JT"
+                    f"Tenant {tenant_id} dispatcher_job_template must differ from "
+                    "central engine Job Templates"
                 )
             if dedicated_dispatcher in dispatcher_owners:
                 raise ValueError(
                     f"Dispatcher Job Template '{dedicated_dispatcher}' is assigned to both "
                     f"{dispatcher_owners[dedicated_dispatcher]} and {tenant_id}"
                 )
+            if dedicated_dispatcher in bound_dispatcher_owners:
+                raise ValueError(
+                    f"Dispatcher Job Template '{dedicated_dispatcher}' collides with "
+                    f"env-bound name owned by {bound_dispatcher_owners[dedicated_dispatcher]}"
+                )
             dispatcher_owners[dedicated_dispatcher] = tenant_id
+            if cfg is not None:
+                for bound_name in env_bound_dispatcher_names(dedicated_dispatcher, cfg):
+                    if bound_name in engine_jt_names:
+                        raise ValueError(
+                            f"Tenant {tenant_id} env-bound Dispatcher JT '{bound_name}' "
+                            "collides with a central engine Job Template"
+                        )
+                    if bound_name in bound_dispatcher_owners:
+                        raise ValueError(
+                            f"Dispatcher Job Template '{bound_name}' is assigned to both "
+                            f"{bound_dispatcher_owners[bound_name]} and {tenant_id}"
+                        )
+                    if bound_name in dispatcher_owners:
+                        raise ValueError(
+                            f"Dispatcher Job Template '{bound_name}' collides with base "
+                            f"name owned by {dispatcher_owners[bound_name]}"
+                        )
+                    bound_dispatcher_owners[bound_name] = tenant_id
     if dispatcher_owners and cfg is not None:
         tenant_dispatcher_defaults(cfg)
+        control_scm_base_url(cfg)
     return normalized
 
 
@@ -1494,6 +1536,9 @@ def resolve_dispatch_route(
     # One central JT per tenant per target_env so multi-env overlays on one AAP
     # host do not overwrite each other's fixed target_env binding.
     bound_jt = f"{dedicated_jt}-{target_env}"
+    platform_scm_org = cfg.get("platform_scm_org")
+    if not isinstance(platform_scm_org, str) or not platform_scm_org.strip():
+        raise ValueError("config.yml platform_scm_org must be a non-empty string")
     return {
         "dedicated": True,
         "job_template": bound_jt,
@@ -1502,6 +1547,8 @@ def resolve_dispatch_route(
         "tenant_id": tenant["tenant_id"],
         "triggered_repo": repo,
         "fixed_extra_vars": {
+            "scm_base_url": control_scm_base_url(cfg),
+            "platform_scm_org": platform_scm_org.strip(),
             "target_env": target_env,
             "dispatch_scope": "tenant",
             "tenant_id": tenant["tenant_id"],

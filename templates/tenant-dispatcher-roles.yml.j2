@@ -5,7 +5,8 @@ controller_roles:
     lookup_organization: Default
     role: execute
     state: present
-  - team: {{ _effective_team_name | to_json }}
+  # AWX/AAP named URL: [+] represents a literal plus inside a component.
+  - team: {{ ((_effective_team_name | replace('+', '[+]')) ~ '++' ~ (_effective_aap_organization | replace('+', '[+]'))) | to_json }}
     job_template: {{ (_effective_dispatcher_job_template ~ '-' ~ _dispatcher_target_env) | to_json }}
     lookup_organization: Default
     role: execute

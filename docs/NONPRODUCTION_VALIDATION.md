@@ -159,6 +159,8 @@ mapped environments. It never applies tenant desired state during onboarding.
 
 Confirm:
 
+- generated control `config.yml` persists the exact `scm_base_url` used by the
+  fixed tenant-bound JT binding (including GitLab or GitHub Enterprise URLs);
 - SCM/foundation completion with markers on all mapped branches;
 - only platform Dispatcher launches occur during onboarding;
 - the first tenant apply requires a later tenant-repository commit;
@@ -167,6 +169,10 @@ Confirm:
   creates only the central JT+Execute roles;
 - a shared Brownfield tenant remains SCM-only;
 - missing or mismatched dedicated JTs fail without shared-JT fallback;
+- dedicated base/env names that collide with central engine JTs fail before AAP
+  mutation;
+- duplicate Team names in different Organizations resolve through the
+  org-qualified Team named URL;
 - two different tenant JTs may run independently, while two runs for one tenant
   remain serialized by `allow_simultaneous=false`.
 

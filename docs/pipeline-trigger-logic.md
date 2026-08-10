@@ -105,6 +105,9 @@ resource references in `config.yml`. Every JT requires
 failure. Different tenant-bound JTs may run independently. A configured
 dedicated JT that is missing or mismatched fails closed without shared-JT
 fallback. Shared `dispatch_scope=full` is refused while any dedicated JT exists.
+These JTs separate execution queues, not the authorization scope of the shared
+apply credential; tenant repositories therefore require trusted authors, branch
+protection, and approvals.
 
 ## GitLab parity
 

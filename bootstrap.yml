@@ -109,6 +109,17 @@
         - { file: config.yml, name: control_config }
         - { file: tenants.yml, name: tenants_registry }
 
+    - name: "Verify authoritative SCM connection"
+      ansible.builtin.assert:
+        that:
+          - control_config.scm_base_url is string
+          - control_config.scm_base_url | length > 0
+          - control_config.scm_base_url == scm_base_url
+          - control_config.scm_provider == scm_provider
+        fail_msg: >-
+          Bootstrap SCM provider/base URL must match the authoritative values in
+          control config.yml.
+
     - name: "Reject removed topology launch inputs"
       ansible.builtin.assert:
         that:
