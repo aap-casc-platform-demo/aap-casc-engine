@@ -1,7 +1,7 @@
 ---
 controller_templates:
-  - name: {{ _effective_dispatcher_job_template | to_json }}
-    description: {{ ('Tenant-bound AAP CasC Dispatcher for ' ~ _effective_tenant_id) | to_json }}
+  - name: {{ (_effective_dispatcher_job_template ~ '-' ~ _dispatcher_target_env) | to_json }}
+    description: {{ ('Tenant-bound AAP CasC Dispatcher for ' ~ _effective_tenant_id ~ ' (' ~ _dispatcher_target_env ~ ')') | to_json }}
     project: {{ _tenant_dispatcher_defaults.project | to_json }}
     playbook: site.yml
     inventory: {{ _tenant_dispatcher_defaults.inventory | to_json }}

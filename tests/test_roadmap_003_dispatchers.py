@@ -80,7 +80,7 @@ class RegistryAndRoutingTests(unittest.TestCase):
             triggered_repo="example-tenants/casc-tenant-stores",
         )
         self.assertTrue(route["dedicated"])
-        self.assertEqual(route["job_template"], "jt-platform-casc_dispatcher-stores")
+        self.assertEqual(route["job_template"], "jt-platform-casc_dispatcher-stores-poc")
         self.assertEqual(
             route["fixed_extra_vars"],
             {
@@ -177,6 +177,7 @@ class TemplateTests(unittest.TestCase):
             "_effective_aap_organization": "stores",
             "_tenant_dispatcher_defaults": dispatcher_defaults(),
             "_dispatcher_target_env": "prod",
+            "_env_branch_map": {"poc": "dev", "prod": "main"},
             "tenant_scm_org": "example-tenants",
             "_tenant_repository": "casc-tenant-stores",
             "control_scm_org": "example-platform",
@@ -188,6 +189,8 @@ class TemplateTests(unittest.TestCase):
                 "templates/tenant-dispatcher-job-template.yml.j2"
             ).render(**context)
         )["controller_templates"][0]
+        self.assertEqual(jt["name"], "jt-platform-casc_dispatcher-stores-prod")
+        self.assertEqual(jt["extra_vars"]["target_env"], "prod")
         self.assertFalse(jt["ask_variables_on_launch"])
         self.assertFalse(jt["survey_enabled"])
         self.assertFalse(jt["allow_simultaneous"])
@@ -200,6 +203,14 @@ class TemplateTests(unittest.TestCase):
                 **context
             )
         )["controller_roles"]
+        self.assertEqual(len(roles), 4)
+        self.assertEqual(
+            {item["job_template"] for item in roles},
+            {
+                "jt-platform-casc_dispatcher-stores-poc",
+                "jt-platform-casc_dispatcher-stores-prod",
+            },
+        )
         self.assertEqual(roles[0]["user"], "svc_casc_launcher")
         self.assertEqual(roles[1]["team"], "Stores Automation")
         self.assertEqual(roles[0]["lookup_organization"], "Default")

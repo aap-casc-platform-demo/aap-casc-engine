@@ -1491,9 +1491,12 @@ def resolve_dispatch_route(
             "triggered_repo": repo,
         }
 
+    # One central JT per tenant per target_env so multi-env overlays on one AAP
+    # host do not overwrite each other's fixed target_env binding.
+    bound_jt = f"{dedicated_jt}-{target_env}"
     return {
         "dedicated": True,
-        "job_template": dedicated_jt,
+        "job_template": bound_jt,
         "dispatch_scope": "tenant",
         "target_env": target_env,
         "tenant_id": tenant["tenant_id"],

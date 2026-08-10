@@ -315,7 +315,7 @@ runtime, not by marking those fields survey-required.
 | `repo_mode`, `repo_visibility` | No | Defaults apply when omitted |
 | `repo_name` | No | Optional combined tenant repository override |
 | `dispatch_enabled` | No | Optional override; empty uses registry/default |
-| `dispatcher_job_template` | No | Optional central tenant-bound Dispatcher name; omission uses shared JT |
+| `dispatcher_job_template` | No | Optional central tenant-bound Dispatcher base name; omission uses shared JT. Engine creates/launches `{name}-{target_env}` per mapped environment |
 | `control_revision` | No | CI pin when supplied; mismatch fails closed |
 
 Do not configure team-lead, user-password, or SCM collaborator survey questions.
@@ -376,13 +376,15 @@ CI supplies these as lowercase API `extra_vars`. Without this survey allowlist
 
 ##### Optional tenant-bound Dispatcher — fixed binding, no survey
 
-Bootstrap creates one JT with fixed `target_env`, `dispatch_scope: tenant`,
-`tenant_id`, tenant repository, and control coordinates. It reuses the shared
-Engine Project, localhost Inventory, EE, credentials, and CI launcher configured
-in `tenant_dispatcher_defaults`. AAP infers the JT's `Default` Organization from
-that shared Project. It has no survey and accepts no launch-time
-binding overrides. The pipeline resolves it by exact name and verifies the
-fixed binding before launch; any mismatch fails without shared-JT fallback.
+Bootstrap creates one JT per mapped `target_env` named
+`{dispatcher_job_template}-{target_env}` with fixed `target_env`,
+`dispatch_scope: tenant`, `tenant_id`, tenant repository, and control
+coordinates. It reuses the shared Engine Project, localhost Inventory, EE,
+credentials, and CI launcher configured in `tenant_dispatcher_defaults`. AAP
+infers each JT's `Default` Organization from that shared Project. JTs have no
+survey and accept no launch-time binding overrides. The pipeline resolves the
+env-specific JT by exact name and verifies the fixed binding before launch; any
+mismatch fails without shared-JT fallback.
 The generated declarations follow the catalog contracts for
 [`controller_templates`](RESOURCE_CATALOG.md#controller_templates) and
 [`controller_roles`](RESOURCE_CATALOG.md#controller_roles).
@@ -766,7 +768,7 @@ tenant_dispatcher_defaults:
 | `onboarding_mode` | `tenant` | required | required | `greenfield` \| `brownfield` |
 | `status` | `tenant` | optional | optional | `active` \| `inactive` |
 | `dispatch_enabled` | `tenant` | optional | optional | Default `true` |
-| `dispatcher_job_template` | `tenant` | optional | optional | Customer-owned central JT name; omit for shared Dispatcher |
+| `dispatcher_job_template` | `tenant` | optional | optional | Customer-owned central JT base name; omit for shared Dispatcher. Live JT names are `{name}-{target_env}` |
 
 Do not store derived `repository` / `repositories` / `repo_by_folder` as
 customer inputs. Legacy `repo_pattern` / `repo_names` are rejected.
