@@ -269,6 +269,20 @@ class TemplateTests(unittest.TestCase):
         )
         self.assertEqual(roles[0]["user"], "svc_casc_launcher")
         self.assertEqual(roles[1]["team"], "Stores Automation++stores")
+        slash_context = dict(
+            context,
+            _effective_team_name="Ops+Team",
+            _effective_aap_organization="Existing LDAP/SAML Organization",
+        )
+        slash_roles = yaml.safe_load(
+            self.jinja.get_template("templates/tenant-dispatcher-roles.yml.j2").render(
+                **slash_context
+            )
+        )["controller_roles"]
+        self.assertEqual(
+            slash_roles[1]["team"],
+            "Ops[+]Team++Existing LDAP[/]SAML Organization",
+        )
         self.assertEqual(roles[0]["lookup_organization"], "Default")
         self.assertEqual(roles[1]["lookup_organization"], "Default")
         self.assertNotIn("organization", roles[1])

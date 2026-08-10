@@ -5,8 +5,10 @@ controller_roles:
     lookup_organization: Default
     role: execute
     state: present
-  # AWX/AAP named URL: [+] represents a literal plus inside a component.
-  - team: {{ ((_effective_team_name | replace('+', '[+]')) ~ '++' ~ (_effective_aap_organization | replace('+', '[+]'))) | to_json }}
+  # AWX/AAP named URL: escape reserved characters inside each component.
+  # Organization names that still contain '/' after escaping can fail through
+  # ingress layers that reject %2F in paths — prefer slash-free AAP org names.
+  - team: {{ ((_effective_team_name | replace('[', '[[]') | replace(']', '[]]') | replace('+', '[+]') | replace('/', '[/]')) ~ '++' ~ (_effective_aap_organization | replace('[', '[[]') | replace(']', '[]]') | replace('+', '[+]') | replace('/', '[/]'))) | to_json }}
     job_template: {{ (_effective_dispatcher_job_template ~ '-' ~ _dispatcher_target_env) | to_json }}
     lookup_organization: Default
     role: execute

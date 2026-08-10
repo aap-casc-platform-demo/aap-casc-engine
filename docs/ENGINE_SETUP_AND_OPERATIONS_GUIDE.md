@@ -388,7 +388,10 @@ the full fixed binding (including `scm_base_url` and `platform_scm_org`) before
 launch; any mismatch fails without shared-JT fallback. Registry validation
 rejects base and `{base}-{target_env}` names that collide with any central
 engine JT. Execute roles grant the tenant Team via the org-qualified named URL
-`{team_name}++{aap_organization}`.
+`{team_name}++{aap_organization}`, with AWX reserved-character escaping
+(`+` → `[+]`, `/` → `[/]`, and bracket escapes). Prefer Organization names
+without `/` when dedicating tenant Dispatchers: many AAP ingress layers reject
+`%2F` in named-URL paths even when the Controller itself documents that form.
 The generated declarations follow the catalog contracts for
 [`controller_templates`](RESOURCE_CATALOG.md#controller_templates) and
 [`controller_roles`](RESOURCE_CATALOG.md#controller_roles).
