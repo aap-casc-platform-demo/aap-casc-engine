@@ -180,9 +180,11 @@ class TemplateTests(unittest.TestCase):
             "_env_branch_map": {"poc": "dev", "prod": "main"},
             "tenant_scm_org": "example-tenants",
             "_tenant_repository": "casc-tenant-stores",
+            "scm_base_url": "https://github.com",
             "control_scm_org": "example-platform",
             "control_repo": "casc-platform-control",
             "control_branch": "main",
+            "platform_scm_org": "example-platform",
         }
         jt = yaml.safe_load(
             self.jinja.get_template(
@@ -191,6 +193,8 @@ class TemplateTests(unittest.TestCase):
         )["controller_templates"][0]
         self.assertEqual(jt["name"], "jt-platform-casc_dispatcher-stores-prod")
         self.assertEqual(jt["extra_vars"]["target_env"], "prod")
+        self.assertEqual(jt["extra_vars"]["scm_base_url"], "https://github.com")
+        self.assertEqual(jt["extra_vars"]["platform_scm_org"], "example-platform")
         self.assertFalse(jt["ask_variables_on_launch"])
         self.assertFalse(jt["survey_enabled"])
         self.assertFalse(jt["allow_simultaneous"])
