@@ -387,17 +387,15 @@ overrides. The pipeline resolves the env-specific JT by exact name and verifies
 the full fixed binding (including `scm_base_url` and `platform_scm_org`) before
 launch; any mismatch fails without shared-JT fallback. Registry validation
 rejects base and `{base}-{target_env}` names that collide with any central
-engine JT. Execute roles grant the tenant Team via the org-qualified named URL
-`{team_name}++{aap_organization}`. Per AWX named-URL rules, `+` inside a
-component becomes `[+]`; other reserved characters (`;/?:@=&[]`, including
-`/`) remain in the identifier for percent-encoding by the Controller API
-client. `/` is valid in AWX Organization names and is not unsuitable customer
-naming. Some AAP ingress layers reject `%2F` in request paths, which is a
-platform compatibility gap for brownfield tenants whose Organization name
-contains `/` when dedicated Dispatcher Team Execute grants use named URLs.
-The generated declarations follow the catalog contracts for
-[`controller_templates`](RESOURCE_CATALOG.md#controller_templates) and
-[`controller_roles`](RESOURCE_CATALOG.md#controller_roles).
+engine JT. After platform desired state is applied, the engine resolves the
+exact tenant Team by `aap_organization` and `team_name`, then grants the
+launcher and Team Execute using that AAP environment's numeric Team ID. IDs are
+never stored in Git and are resolved independently on each AAP environment.
+This avoids named-URL path restrictions, including ingress rejection of `%2F`
+for valid Organization names containing `/`. The generated JT declaration
+follows the catalog contract for
+[`controller_templates`](RESOURCE_CATALOG.md#controller_templates); Execute
+assignments are derived from the authoritative tenant registry.
 
 Tenant-scoped apply still uses the shared AAP apply credential. Tenant-bound JTs
 separate and serialize execution queues; they do not create an additional AAP

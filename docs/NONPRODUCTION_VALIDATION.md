@@ -171,8 +171,10 @@ Confirm:
 - missing or mismatched dedicated JTs fail without shared-JT fallback;
 - dedicated base/env names that collide with central engine JTs fail before AAP
   mutation;
-- duplicate Team names in different Organizations resolve through the
-  org-qualified Team named URL;
+- duplicate Team names in different Organizations resolve to the correct Team
+  ID using exact Organization and Team queries;
+- a Brownfield Organization name containing `/` resolves without using a named
+  URL path, and its tenant Team receives Execute on the dedicated Dispatcher;
 - two different tenant JTs may run independently, while two runs for one tenant
   remain serialized by `allow_simultaneous=false`.
 

@@ -257,53 +257,6 @@ class TemplateTests(unittest.TestCase):
         self.assertNotIn("organization", jt)
         self.assertEqual(jt["project"], dispatcher_defaults()["project"])
 
-        roles = yaml.safe_load(
-            self.jinja.get_template("templates/tenant-dispatcher-roles.yml.j2").render(
-                **context
-            )
-        )["controller_roles"]
-        self.assertEqual(len(roles), 2)
-        self.assertEqual(
-            {item["job_template"] for item in roles},
-            {"jt-platform-casc_dispatcher-stores-prod"},
-        )
-        self.assertEqual(roles[0]["user"], "svc_casc_launcher")
-        self.assertEqual(roles[1]["team"], "Stores Automation++stores")
-        plus_context = dict(
-            context,
-            _effective_team_name="Ops+Team",
-            _effective_aap_organization="Existing LDAP/SAML Organization",
-        )
-        plus_roles = yaml.safe_load(
-            self.jinja.get_template("templates/tenant-dispatcher-roles.yml.j2").render(
-                **plus_context
-            )
-        )["controller_roles"]
-        # AWX docs: only '+' becomes '[+]'; '/' stays literal for API percent-encoding.
-        self.assertEqual(
-            plus_roles[1]["team"],
-            "Ops[+]Team++Existing LDAP/SAML Organization",
-        )
-        self.assertEqual(roles[0]["lookup_organization"], "Default")
-        self.assertEqual(roles[1]["lookup_organization"], "Default")
-        self.assertNotIn("organization", roles[1])
-        self.assertTrue(all(item["role"] == "execute" for item in roles))
-
-        escaped_context = {
-            **context,
-            "_effective_team_name": "Stores + Automation",
-            "_effective_aap_organization": "Retail + Stores",
-        }
-        escaped_roles = yaml.safe_load(
-            self.jinja.get_template("templates/tenant-dispatcher-roles.yml.j2").render(
-                **escaped_context
-            )
-        )["controller_roles"]
-        self.assertEqual(
-            escaped_roles[1]["team"],
-            "Stores [+] Automation++Retail [+] Stores",
-        )
-
 
 class LauncherTests(unittest.TestCase):
     def test_shared_launch_keeps_existing_runtime_variables(self):
@@ -483,6 +436,30 @@ class PipelineTests(unittest.TestCase):
             site.index("Record normalized tenant runtime data"),
             site.index("Refuse shared full scope"),
         )
+
+    def test_platform_dispatch_resolves_team_id_after_resource_apply(self):
+        site = (ROOT / "site.yml").read_text(encoding="utf-8")
+        dispatch = site.index("role: infra.aap_configuration.dispatch")
+        resolve_org = site.index("Resolve tenant Dispatcher Organizations by exact name")
+        resolve_team = site.index("Resolve tenant Dispatcher Teams by exact name and Organization")
+        grant_team = site.index("Grant launcher and tenant Team Execute on tenant-bound Dispatchers")
+        self.assertLess(dispatch, resolve_org)
+        self.assertLess(resolve_org, resolve_team)
+        self.assertLess(resolve_team, grant_team)
+        self.assertIn("ansible.controller.controller_api", site)
+        self.assertIn("'name': item.aap_organization", site)
+        self.assertIn("'name': item.team_name", site)
+        self.assertIn("'organization': _tenant_dispatcher_organization_ids[item.tenant_id]", site)
+        self.assertIn("team: \"{{ _tenant_dispatcher_team_ids[item.tenant_id] }}\"", site)
+        self.assertIn("user: \"{{ control_config.tenant_dispatcher_defaults.launcher_user }}\"", site)
+        self.assertGreaterEqual(site.count("expect_one=true"), 2)
+        self.assertGreaterEqual(site.count("return_ids=true"), 2)
+
+    def test_bootstrap_does_not_generate_named_url_role_files(self):
+        bootstrap = (ROOT / "bootstrap.yml").read_text(encoding="utf-8")
+        self.assertNotIn("tenant-dispatcher-roles.yml.j2", bootstrap)
+        self.assertNotIn("/roles/' + _effective_tenant_id + '-dispatcher.yml", bootstrap)
+        self.assertFalse((ROOT / "templates/tenant-dispatcher-roles.yml.j2").exists())
 
 if __name__ == "__main__":
     unittest.main()

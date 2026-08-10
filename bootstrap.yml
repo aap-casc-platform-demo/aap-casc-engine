@@ -277,19 +277,6 @@
       loop: "{{ _env_branch_map.keys() | list }}"
       when: _effective_dispatcher_job_template | length > 0
 
-    - name: "Add environment-bound tenant Dispatcher Execute assignments"
-      ansible.builtin.set_fact:
-        _platform_scaffold_files: >-
-          {{ _platform_scaffold_files
-             + [{'repo': platform_repo,
-                 'path': item + '/roles/' + _effective_tenant_id + '-dispatcher.yml',
-                 'content': lookup('template', 'templates/tenant-dispatcher-roles.yml.j2'),
-                 'label': 'tenant Dispatcher Execute roles (' + item + ')'}] }}
-      vars:
-        _dispatcher_target_env: "{{ item }}"
-      loop: "{{ _env_branch_map.keys() | list }}"
-      when: _effective_dispatcher_job_template | length > 0
-
     - name: "Reset foundation validation directory"
       ansible.builtin.file:
         path: "{{ bootstrap_validation_dir }}"
@@ -310,14 +297,6 @@
     - name: "Prepare environment Dispatcher template validation directories"
       ansible.builtin.file:
         path: "{{ bootstrap_validation_dir }}/{{ item }}/templates"
-        state: directory
-        mode: '0700'
-      loop: "{{ _env_branch_map.keys() | list }}"
-      when: _effective_dispatcher_job_template | length > 0
-
-    - name: "Prepare environment Dispatcher role validation directories"
-      ansible.builtin.file:
-        path: "{{ bootstrap_validation_dir }}/{{ item }}/roles"
         state: directory
         mode: '0700'
       loop: "{{ _env_branch_map.keys() | list }}"

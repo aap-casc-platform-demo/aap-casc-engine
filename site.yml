@@ -266,6 +266,67 @@
         users_default_password: ""
 
   post_tasks:
+    # Tenant Dispatcher role assignments are derived from tenants.yml. Resolve
+    # IDs after dispatch so Greenfield Organizations, Teams, and JTs exist.
+    - name: "Select tenant-bound Dispatcher role assignments"
+      ansible.builtin.set_fact:
+        _tenant_dispatcher_bindings: >-
+          {{ (_normalized_tenants
+              | selectattr('dispatcher_job_template', 'defined')
+              | list)
+             if dispatch_scope == 'platform' else [] }}
+        _tenant_dispatcher_organization_ids: {}
+        _tenant_dispatcher_team_ids: {}
+
+    - name: "Resolve tenant Dispatcher Organizations by exact name"
+      ansible.builtin.set_fact:
+        _tenant_dispatcher_organization_ids: >-
+          {{ _tenant_dispatcher_organization_ids
+             | combine({item.tenant_id: lookup(
+                 'ansible.controller.controller_api',
+                 'organizations',
+                 query_params={'name': item.aap_organization},
+                 expect_one=true,
+                 return_ids=true)}) }}
+      loop: "{{ _tenant_dispatcher_bindings }}"
+      loop_control:
+        label: "{{ item.tenant_id }} -> {{ item.aap_organization }}"
+
+    - name: "Resolve tenant Dispatcher Teams by exact name and Organization"
+      ansible.builtin.set_fact:
+        _tenant_dispatcher_team_ids: >-
+          {{ _tenant_dispatcher_team_ids
+             | combine({item.tenant_id: lookup(
+                 'ansible.controller.controller_api',
+                 'teams',
+                 query_params={
+                   'name': item.team_name,
+                   'organization': _tenant_dispatcher_organization_ids[item.tenant_id]
+                 },
+                 expect_one=true,
+                 return_ids=true)}) }}
+      loop: "{{ _tenant_dispatcher_bindings }}"
+      loop_control:
+        label: "{{ item.tenant_id }} -> {{ item.team_name }}"
+
+    - name: "Grant launcher and tenant Team Execute on tenant-bound Dispatchers"
+      ansible.controller.role:
+        user: "{{ control_config.tenant_dispatcher_defaults.launcher_user }}"
+        team: "{{ _tenant_dispatcher_team_ids[item.tenant_id] }}"
+        job_template: "{{ item.dispatcher_job_template }}-{{ target_env }}"
+        lookup_organization: Default
+        role: execute
+        state: present
+        controller_host: "{{ aap_hostname }}"
+        controller_username: "{{ aap_username }}"
+        controller_password: "{{ aap_password }}"
+        validate_certs: "{{ aap_validate_certs }}"
+      loop: "{{ _tenant_dispatcher_bindings }}"
+      loop_control:
+        label: >-
+          {{ item.tenant_id }} -> {{ item.dispatcher_job_template }}-{{ target_env }}
+          (Team ID {{ _tenant_dispatcher_team_ids[item.tenant_id] }})
+
     # Phase 7: Engine-side Hub RBAC apply (not in collection dispatcher)
     - name: "Apply Hub RBAC resources (not in default dispatch)"
       ansible.builtin.include_role:
