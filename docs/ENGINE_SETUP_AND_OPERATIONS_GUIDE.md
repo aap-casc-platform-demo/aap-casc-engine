@@ -388,10 +388,13 @@ the full fixed binding (including `scm_base_url` and `platform_scm_org`) before
 launch; any mismatch fails without shared-JT fallback. Registry validation
 rejects base and `{base}-{target_env}` names that collide with any central
 engine JT. Execute roles grant the tenant Team via the org-qualified named URL
-`{team_name}++{aap_organization}`, with AWX reserved-character escaping
-(`+` → `[+]`, `/` → `[/]`, and bracket escapes). Prefer Organization names
-without `/` when dedicating tenant Dispatchers: many AAP ingress layers reject
-`%2F` in named-URL paths even when the Controller itself documents that form.
+`{team_name}++{aap_organization}`. Per AWX named-URL rules, `+` inside a
+component becomes `[+]`; other reserved characters (`;/?:@=&[]`, including
+`/`) remain in the identifier for percent-encoding by the Controller API
+client. `/` is valid in AWX Organization names and is not unsuitable customer
+naming. Some AAP ingress layers reject `%2F` in request paths, which is a
+platform compatibility gap for brownfield tenants whose Organization name
+contains `/` when dedicated Dispatcher Team Execute grants use named URLs.
 The generated declarations follow the catalog contracts for
 [`controller_templates`](RESOURCE_CATALOG.md#controller_templates) and
 [`controller_roles`](RESOURCE_CATALOG.md#controller_roles).
