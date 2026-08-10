@@ -1,14 +1,12 @@
 ---
 controller_roles:
-{% for env in (_env_branch_map.keys() | list) %}
   - user: {{ _tenant_dispatcher_defaults.launcher_user | to_json }}
-    job_template: {{ (_effective_dispatcher_job_template ~ '-' ~ env) | to_json }}
+    job_template: {{ (_effective_dispatcher_job_template ~ '-' ~ _dispatcher_target_env) | to_json }}
     lookup_organization: Default
     role: execute
     state: present
   - team: {{ _effective_team_name | to_json }}
-    job_template: {{ (_effective_dispatcher_job_template ~ '-' ~ env) | to_json }}
+    job_template: {{ (_effective_dispatcher_job_template ~ '-' ~ _dispatcher_target_env) | to_json }}
     lookup_organization: Default
     role: execute
     state: present
-{% endfor %}

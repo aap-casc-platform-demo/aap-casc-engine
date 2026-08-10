@@ -203,13 +203,10 @@ class TemplateTests(unittest.TestCase):
                 **context
             )
         )["controller_roles"]
-        self.assertEqual(len(roles), 4)
+        self.assertEqual(len(roles), 2)
         self.assertEqual(
             {item["job_template"] for item in roles},
-            {
-                "jt-platform-casc_dispatcher-stores-poc",
-                "jt-platform-casc_dispatcher-stores-prod",
-            },
+            {"jt-platform-casc_dispatcher-stores-prod"},
         )
         self.assertEqual(roles[0]["user"], "svc_casc_launcher")
         self.assertEqual(roles[1]["team"], "Stores Automation")
